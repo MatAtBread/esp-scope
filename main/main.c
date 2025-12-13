@@ -548,13 +548,19 @@ static esp_err_t power_handler(httpd_req_t* req) {
   gpio_set_level(CONFIG_LED_BUILTIN, 0);
 #endif
 
+  httpd_resp_set_type(req, "text/html");
+  httpd_resp_set_hdr(req, "Content-Type", "text/html; charset=utf-8");
+  httpd_resp_send(req, "<html><body><h1>Bye!</h1></body></html>", HTTPD_RESP_USE_STRLEN);
+
+  vTaskDelay(pdMS_TO_TICKS(200));
+
   esp_sleep_enable_timer_wakeup(30L * 24L * 60L * 60L * 1000000ULL);  // One month
   esp_deep_sleep_start();
   return ESP_OK;
 }
 
 static const httpd_uri_t uri_power = {
-    .uri = "/poweroff", .method = HTTP_POST, .handler = power_handler, .user_ctx = NULL};
+    .uri = "/poweroff", .method = HTTP_GET, .handler = power_handler, .user_ctx = NULL};
 
 static void start_webserver(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();

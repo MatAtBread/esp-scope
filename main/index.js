@@ -453,7 +453,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   window.location.reload();
 });
 document.getElementById('powerOff').addEventListener('click', () => {
-  navigator.sendBeacon("/poweroff");
+  window.location.href = "/poweroff";
 });
 setParams();
 connect();
