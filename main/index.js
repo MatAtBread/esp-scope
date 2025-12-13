@@ -452,6 +452,9 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   localStorage.clear();
   window.location.reload();
 });
+document.getElementById('powerOff').addEventListener('click', () => {
+  navigator.sendBeacon("/poweroff");
+});
 setParams();
 connect();
 

@@ -111,13 +111,14 @@
             direction: rtl;
         }
 
-        #resetBtn {
+        #resetBtn, #powerOff {
             background: #222;
             color: #e66;
             border: 1px solid;
             font-size: 0.8rem;
             height: 4em;
             width: 6em;
+            vertical-align: middle;
         }
     </style>
 </head>
@@ -168,7 +169,10 @@
                         <input type="number" id="testHz" value="100" min="1" max="10000">
                     </div>
                 </div>
-                <button id="resetBtn">Reset</button>
+                <div>
+                    <button id="resetBtn">Reset</button>
+                    <button id="powerOff">Power off</button>
+                </div>
             </form>
         </div>
 

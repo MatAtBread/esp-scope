@@ -1,15 +1,20 @@
 menu "espScope Configuration"
+    config LED_BUILTIN
+        int "LED IO Pin"
+        default 15
+        help
+            LED IO pin
 
     config ESP_WIFI_SSID
         string "WiFi SSID"
         default "myssid"
         help
-            SSID (network name) to connect to.
+            Default SSID (network name) to connect to. You can change this onece connected via the web interface.
 
     config ESP_WIFI_PASSWORD
         string "WiFi Password"
         default "mypassword"
         help
-            WiFi password.
+            Default SSID password. You can change this onece connected via the web interface.
 
 endmenu
