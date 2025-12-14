@@ -33,6 +33,9 @@ static httpd_handle_t s_server_handle = NULL;
 #define AP_SSID "ESP-Scope"
 #define AP_PASS ""
 
+// Current NVS specified ssid
+static char ssid[33] = {0};
+
 // Forward decls
 
 static void wifi_init_softap(void);
@@ -321,9 +324,9 @@ bool wifi_manager_init_wifi(void) {
 
     // 2. Check NVS
     nvs_handle_t nvs_handle;
-    char ssid[33] = {0};
     char pass[64] = {0};
     size_t ssid_len = sizeof(ssid);
+    memset(ssid, 0, sizeof ssid);
     size_t pass_len = sizeof(pass);
     bool has_creds = false;
 

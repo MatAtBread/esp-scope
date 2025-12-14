@@ -300,7 +300,7 @@ static void show_status_led() {
 #ifdef CONFIG_BSP_CONFIG_GPIO
     if (!is_ap && gpio_get_level(CONFIG_BSP_CONFIG_GPIO) == 0) {
       if (now - reset_pressed_time > 1000) {
-        ESP_LOGW(TAG, "Factory Reset Triggered via GPIO %d", CONFIG_BSP_CONFIG_GPIO);
+        ESP_LOGW(TAG, "Reset to WiFi-AP mode triggered via GPIO %d", CONFIG_BSP_CONFIG_GPIO);
         wifi_manager_erase_config();
         esp_restart();
       } else {
