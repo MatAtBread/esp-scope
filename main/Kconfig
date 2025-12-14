@@ -5,16 +5,11 @@ menu "espScope Configuration"
         help
             LED IO pin
 
-    config ESP_WIFI_SSID
-        string "WiFi SSID"
-        default "myssid"
+    config BSP_CONFIG_GPIO
+        int "Factory Reset Pin (GPIO)"
+        default 9
         help
-            Default SSID (network name) to connect to. You can change this onece connected via the web interface.
-
-    config ESP_WIFI_PASSWORD
-        string "WiFi Password"
-        default "mypassword"
-        help
-            Default SSID password. You can change this onece connected via the web interface.
+            GPIO pin number to hold low on boot to erase NVS (Factory Reset).
+            Default is 9 (BOOT button on Seeed XIAO ESP32C6).
 
 endmenu

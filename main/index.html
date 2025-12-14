@@ -3,180 +3,316 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>espScope</title>
     <style>
+        * {
+            box-sizing: border-box;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
             background: #1a1a1a;
             color: #e0e0e0;
             margin: 0;
-            padding: 20px;
+            padding: 0;
+            height: 100vh;
+            /* Fallback */
+            height: 100dvh;
+            /* Mobile viewport fix */
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
         }
 
         .container {
-            max-width: 1000px;
-            margin: 0 auto;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            width: 100%;
+            max-width: 100%;
         }
 
-        h1 {
-            color: #4ade80;
+        /* Top Section: Chart (Fills available space) */
+        .chart-section {
+            flex-grow: 1;
+            position: relative;
+            background: #000;
+            min-height: 0;
+            /* Important for flex child with specific height content */
+            display: flex;
         }
 
-        .card {
+        .canvas-container {
+            flex-grow: 1;
+            position: relative;
+            height: 100%;
+            width: 100%;
+            border: 8px solid #333;
+        }
+
+        canvas {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        /* Trigger Slider floating on right */
+        #triggerLevel {
+            position: absolute;
+            right: 0;
+            top: 0;
+            bottom: 0;
+            height: 100%;
+            width: 20px;
+            margin: 0;
+            appearance: slider-vertical;
+            background: transparent;
+            z-index: 10;
+        }
+
+        /* Status Text Overlay */
+        .status-overlay {
+            position: absolute;
+            top: 10px;
+            right: 20px;
+            pointer-events: none;
+            text-shadow: 1px 1px 2px black;
+        }
+
+        .status {
+            font-family: monospace;
+            color: #ccc;
+        }
+
+        #reconnectBtn {
+            pointer-events: auto;
+            margin-top: 5px;
+        }
+
+        /* Bottom Section: Controls */
+        .controls-section {
             background: #2d2d2d;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            padding-bottom: calc(10px + env(safe-area-inset-bottom));
+            /* iOS Home Bar fix */
+            border-top: 1px solid #444;
+            flex-shrink: 0;
+            z-index: 20;
         }
 
         .controls {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(8em, 1fr));
-            gap: 15px;
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            /* gap: 15px; */
+            justify-content: space-around;
+            flex-wrap: nowrap;
+            overflow-x: auto;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 5px;
+            white-space: nowrap;
+            margin-right: 15px;
         }
 
         label {
-            display: block;
-            margin-bottom: 5px;
-            font-size: 0.9em;
+            font-size: 0.85em;
             color: #bbb;
-        }
-
-        label {
-            width: 10em;
+            margin-right: 4px;
         }
 
         input,
         select {
-            width: 6em;
-            padding: 8px;
             background: #3d3d3d;
             border: 1px solid #555;
             color: white;
             border-radius: 4px;
+            padding: 6px;
+            font-size: 0.9em;
+            width: 5em;
+        }
+
+        select {
+            width: auto;
+        }
+
+        /* Buttons Group */
+        .btn-group {
+            display: flex;
+            gap: 8px;
+            margin-left: auto;
         }
 
         button {
             background: #4ade80;
             color: #1a1a1a;
             border: none;
-            padding: 10px 20px;
+            padding: 8px 12px;
             border-radius: 4px;
             font-weight: bold;
             cursor: pointer;
-            transition: background 0.2s;
+            white-space: nowrap;
+            font-size: 0.9em;
         }
 
         button:hover {
             background: #22c55e;
         }
 
-        canvas {
-            width: 100%;
-            height: 400px;
-            background: #000;
-            border-radius: 4px;
-        }
-
-        .status {
-            font-family: monospace;
-            margin-top: 10px;
-        }
-
-        .info {
-            font-family: monospace;
-            margin-top: 10px;
+        button.secondary {
+            background: #444;
+            color: #ccc;
         }
 
         #deltaPanel {
             position: absolute;
-            background: #2d2d2d;
+            background: rgba(45, 45, 45, 0.9);
             color: #e0e0e0;
             padding: 5px 10px;
             border-radius: 4px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            pointer-events: none;
             display: none;
+            z-index: 50;
         }
 
-        #triggerLevel {
-            /* appearance: slider-vertical; */
-            position: relative;
-            height: 408px;
-            top: -16px;
-            margin-left: 10px;
-            width: 1px;
-            writing-mode: vertical-lr;
-            direction: rtl;
+        /* Modal Styles */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
         }
 
-        #resetBtn, #powerOff {
-            background: #222;
-            color: #e66;
-            border: 1px solid;
-            font-size: 0.8rem;
-            height: 4em;
-            width: 6em;
-            vertical-align: middle;
+        .modal-content {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 8px;
+            width: 300px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+            font-size: 1.2em;
+            margin-bottom: 15px;
+            color: #4ade80;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            width: 100%;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .form-group input {
+            width: 100%;
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
         }
     </style>
 </head>
 
 <body>
     <div class="container">
-        <div class="card">
-            <div style="display: flex; position: relative;">
+        <!-- Top Section: Chart -->
+        <div class="chart-section">
+            <div class="canvas-container">
                 <canvas id="adcChart"></canvas>
-                <input type="range" id="triggerLevel" orient="vertical" min="0" max="4096" value="2048">
             </div>
-            <div style="display:flex; justify-content:space-between; align-items:center;">
+
+            <!-- Floating Trigger Slider -->
+            <input type="range" id="triggerLevel" orient="vertical" min="0" max="4096" value="2048">
+
+            <!-- Overlay Status -->
+            <div class="status-overlay">
                 <div class="status" id="status">Connecting...</div>
                 <button id="reconnectBtn"
-                    style="display:none; background:#eab308; color:#000; padding:4px 8px; font-size:0.8rem;">Reconnect
-                    Now</button>
+                    style="display:none; background:#eab308; color:#000; padding:4px 8px; font-size:0.8rem;">Reconnect</button>
                 <div class="info" id="info"></div>
             </div>
+
+            <!-- Mouseover Info Tooltip -->
+            <div id="deltaPanel"></div>
         </div>
 
-        <div class="card">
+        <!-- Bottom Section: Controls -->
+        <div class="controls-section">
             <div class="controls">
-                <div>
-                    <label>Sample Rate (Hz)</label>
+
+                <div class="control-group">
+                    <label>Rate(Hz)</label>
                     <input type="number" id="sampleRate" value="10000" min="1" max="83333">
                 </div>
-                <div style="display: none;">
-                    <label>Bit Width</label>
+
+                <div class="control-group" style="display: none;">
+                    <label>BitWidth</label>
                     <select id="bitWidth">
-                        <option value="12" selected>12-bit</option>
-                        <option value="11">11-bit</option>
-                        <option value="10">10-bit</option>
-                        <option value="9">9-bit</option>
+                        <option value="12" selected>12</option>
+                        <option value="11">11</option>
+                        <option value="10">10</option>
+                        <option value="9">9</option>
                     </select>
                 </div>
-                <div>
-                    <label>Attenuation</label>
+
+                <div class="control-group">
+                    <label>Atten</label>
                     <select id="atten">
-                        <option value="0">0 dB</option>
-                        <option value="1">2.5 dB</option>
-                        <option value="2">6 dB</option>
-                        <option value="3" selected>11 dB</option>
+                        <option value="0">0dB</option>
+                        <option value="1">2.5dB</option>
+                        <option value="2">6dB</option>
+                        <option value="3" selected>11dB</option>
                     </select>
                 </div>
-                <div>
-                    <div>
-                        <label>Test Hz</label>
-                        <input type="number" id="testHz" value="100" min="1" max="10000">
-                    </div>
+
+                <div class="control-group">
+                    <label>TestHz</label>
+                    <input type="number" id="testHz" value="100" min="1" max="10000">
                 </div>
-                <div>
-                    <button id="resetBtn">Reset</button>
-                    <button id="powerOff">Power off</button>
+
+                <div class="btn-group">
+                    <button id="resetBtn" class="secondary">Rst</button>
+                    <button id="wifiBtn" class="secondary">Wifi</button>
+                    <button id="powerOff" class="secondary">Off</button>
                 </div>
             </div>
         </div>
+    </div>
 
-        <div id="deltaPanel"></div>
+    <!-- Wifi Modal -->
+    <div id="wifiModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">Configure Wi-Fi</div>
+            <div class="form-group">
+                <label>SSID</label>
+                <input type="text" id="wifiSsid" placeholder="Network Name">
+            </div>
+            <div class="form-group">
+                <label>Password</label>
+                <input type="password" id="wifiPass" placeholder="Password">
+            </div>
+            <div class="modal-actions">
+                <button id="closeWifi" style="background:#555; color:#fff;">Cancel</button>
+                <button id="saveWifi">Save</button>
+            </div>
+        </div>
     </div>
 
     <script src="index.js"></script>

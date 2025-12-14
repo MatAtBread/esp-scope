@@ -461,5 +461,44 @@ document.getElementById('resetBtn').addEventListener('click', () => {
   window.location.reload();
 });
 document.getElementById('powerOff').addEventListener('click', () => window.location.href = "/poweroff");
+
+function setupWifiListeners() {
+  const modal = document.getElementById('wifiModal');
+  const btn = document.getElementById('wifiBtn');
+  const closeBtn = document.getElementById('closeWifi');
+  const saveBtn = document.getElementById('saveWifi');
+
+  if (btn) btn.onclick = () => {
+    modal.style.display = "flex";
+    document.getElementById('wifiSsid').focus();
+  };
+  if (closeBtn) closeBtn.onclick = () => modal.style.display = "none";
+  if (saveBtn) saveBtn.onclick = () => {
+    const ssid = document.getElementById('wifiSsid').value;
+    const pass = document.getElementById('wifiPass').value;
+
+    if (!ssid) {
+      alert("SSID is required");
+      return;
+    }
+
+    saveBtn.innerText = "Saving...";
+    fetch('/api/save_wifi', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssid, password: pass })
+    })
+      .then(res => res.text())
+      .then(text => {
+        alert(text);
+        window.location.reload();
+      })
+      .catch(err => {
+        alert("Error: " + err);
+        saveBtn.innerText = "Save";
+      });
+  };
+}
+setupWifiListeners();
 setParams();
 connect();

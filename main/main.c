@@ -14,29 +14,20 @@
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_wifi.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
+#include "wifi_manager.h"
 #include "nvs_flash.h"
 
 // Tag for logging
 static const char* TAG = "ESP-SCOPE";
 
-// WiFi configuration from Kconfig
-/* See untracked wifi-credentials.h */
-#ifndef ESP_WIFI_SSID
-#define ESP_WIFI_SSID CONFIG_ESP_WIFI_SSID
-#define ESP_WIFI_PASS CONFIG_ESP_WIFI_PASSWORD
-#endif
-
 #define ESP_MAXIMUM_RETRY 5
 
 /* FreeRTOS event group to signal when we are connected*/
-static EventGroupHandle_t s_wifi_event_group;
-#define WIFI_CONNECTED_BIT BIT0
-#define WIFI_FAIL_BIT BIT1
 
-static int s_retry_num = 0;
 
 // Embedded index.html
 extern const uint8_t index_html_start[] asm("_binary_index_html_start");
@@ -45,7 +36,6 @@ extern const uint8_t index_js_start[] asm("_binary_index_js_start");
 extern const uint8_t index_js_end[] asm("_binary_index_js_end");
 
 // Forward declarations
-static void wifi_init_sta(void);
 static void start_webserver(void);
 
 // ADC Configuration
@@ -62,7 +52,7 @@ static void start_webserver(void);
  * Web Server Configuration
  */
 static httpd_handle_t s_server = NULL;
-
+static bool is_ap = false;
 #define ADC_READ_LEN 4096
 
 static adc_continuous_handle_t adc_handle = NULL;
@@ -78,13 +68,6 @@ static adc_bitwidth_t s_bit_width = ADC_BIT_WIDTH;
 static uint16_t s_test_hz = 100;
 
 // Forward declarations
-static void wifi_init_sta(void);
-static void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num,
-                                adc_continuous_handle_t* out_handle);
-static esp_err_t ws_handler(httpd_req_t* req);
-
-// Forward declarations
-static void wifi_init_sta(void);
 static void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num,
                                 adc_continuous_handle_t* out_handle);
 static esp_err_t ws_handler(httpd_req_t* req);
@@ -287,14 +270,44 @@ static void start_test_signal(uint32_t hz) {
 }
 
 static void show_status_led() {
-#ifdef CONFIG_LED_BUILTIN
+  #ifdef CONFIG_BSP_CONFIG_GPIO
+  gpio_config_t rst_conf = {
+      .pin_bit_mask = (1ULL << CONFIG_BSP_CONFIG_GPIO),
+      .mode = GPIO_MODE_INPUT,
+      .pull_up_en = GPIO_PULLUP_ENABLE,
+      .pull_down_en = GPIO_PULLDOWN_DISABLE,
+      .intr_type = GPIO_INTR_DISABLE
+  };
+  gpio_config(&rst_conf);
+  #endif
+
+  int64_t reset_pressed_time = 0;
   while (true) {
-    vTaskDelay(pdMS_TO_TICKS(100));
+    int64_t now = esp_timer_get_time() / 1000;
+    #ifdef CONFIG_LED_BUILTIN
+    vTaskDelay(pdMS_TO_TICKS(is_ap ? 500 : 100));
     gpio_set_level(CONFIG_LED_BUILTIN, 1);
     vTaskDelay(pdMS_TO_TICKS(s_ws_client_fd == -1 ? 900 : 200));
     gpio_set_level(CONFIG_LED_BUILTIN, 0);
+    #else
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    #endif
+
+    // Check Reset Pin
+    #ifdef CONFIG_BSP_CONFIG_GPIO
+    if (!is_ap && gpio_get_level(CONFIG_BSP_CONFIG_GPIO) == 0) {
+        if (now - reset_pressed_time > 1000) {
+            ESP_LOGW(TAG, "Factory Reset Triggered via GPIO %d", CONFIG_BSP_CONFIG_GPIO);
+            wifi_manager_erase_config();
+            esp_restart();
+        } else {
+            reset_pressed_time = now;
+        }
+    } else {
+        reset_pressed_time = 0;
+    }
+    #endif
   }
-#endif
 }
 
 void app_main(void) {
@@ -318,7 +331,6 @@ void app_main(void) {
   gpio_set_level(CONFIG_LED_BUILTIN, 0);
 #endif
 
-  ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
   /* Board-specific WiFi init (if any) */
   // Seeed XIAO ESP32C6: Configure GPIO 3 and GPIO 14 as outputs
   gpio_config_t board_io_conf = {
@@ -334,82 +346,21 @@ void app_main(void) {
   gpio_set_level(14, 0);
   /* end board-specific WiFi init (if any) */
 
-  wifi_init_sta();
+  is_ap = wifi_manager_init_wifi();
+
   start_test_signal(100);
   xTaskCreate(adc_read_task, "adc_read_task", 8192 + ADC_READ_LEN, NULL, 5, NULL);
 
-  // Wait for WiFi connection
-  EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                         WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                         pdFALSE, pdFALSE, portMAX_DELAY);
+  // Wait for WiFi connection (Not strict blocking anymore, manager handles it)
+  // But let's keep it to print status
+  // Note: s_wifi_event_group is local to this file, we removed it in place of manager's.
+  // Proper way: expose event group from manager or just dont block here.
+  // For now, let's just proceed. The webserver will start and wait for connections.
 
-  if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(TAG, "connected to ap SSID:%s", ESP_WIFI_SSID);
-    start_webserver();
-    show_status_led();
-  } else if (bits & WIFI_FAIL_BIT) {
-    ESP_LOGI(TAG, "Failed to connect to SSID:%s", ESP_WIFI_SSID);
-  } else {
-    ESP_LOGE(TAG, "UNEXPECTED EVENT");
-  }
+  start_webserver();
+  show_status_led();
 }
 
-static void event_handler(void* arg, esp_event_base_t event_base,
-                          int32_t event_id, void* event_data) {
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-    esp_wifi_connect();
-  } else if (event_base == WIFI_EVENT &&
-             event_id == WIFI_EVENT_STA_DISCONNECTED) {
-    if (s_retry_num < ESP_MAXIMUM_RETRY) {
-      esp_wifi_connect();
-      s_retry_num++;
-      ESP_LOGI(TAG, "retry to connect to the AP");
-    } else {
-      xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
-    }
-    ESP_LOGI(TAG, "connect to the AP fail");
-  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
-    ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
-    ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
-    s_retry_num = 0;
-    xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-  }
-}
-
-static void wifi_init_sta(void) {
-  s_wifi_event_group = xEventGroupCreate();
-
-  ESP_ERROR_CHECK(esp_netif_init());
-
-  ESP_ERROR_CHECK(esp_event_loop_create_default());
-  esp_netif_t* netif = esp_netif_create_default_wifi_sta();
-  esp_netif_set_hostname(netif, "esp-scope");  // Set hostname for the STA interface
-
-  wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-  esp_event_handler_instance_t instance_any_id;
-  esp_event_handler_instance_t instance_got_ip;
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, &instance_any_id));
-  ESP_ERROR_CHECK(esp_event_handler_instance_register(
-      IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &instance_got_ip));
-
-  wifi_config_t wifi_config = {
-      .sta =
-          {
-              .ssid = ESP_WIFI_SSID,
-              .password = ESP_WIFI_PASS,
-              .threshold.authmode = WIFI_AUTH_WPA2_PSK,
-          },
-  };
-  ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-  ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-  ESP_ERROR_CHECK(esp_wifi_start());
-  ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
-
-  ESP_LOGI(TAG, "wifi_init_sta finished.");
-}
 
 /*
  * WebSocket Handler
@@ -562,6 +513,16 @@ static esp_err_t power_handler(httpd_req_t* req) {
 static const httpd_uri_t uri_power = {
     .uri = "/poweroff", .method = HTTP_GET, .handler = power_handler, .user_ctx = NULL};
 
+/* Error handler for 404 - Redirects to captive portal */
+static esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
+{
+    /* Set status 302 Redirect */
+    httpd_resp_set_status(req, "302 Found");
+    httpd_resp_set_hdr(req, "Location", "/");
+    httpd_resp_send(req, NULL, 0); // No body needed
+    return ESP_OK;
+}
+
 static void start_webserver(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
@@ -573,7 +534,13 @@ static void start_webserver(void) {
     httpd_register_uri_handler(s_server, &uri_index_js);
     httpd_register_uri_handler(s_server, &uri_ws);
     httpd_register_uri_handler(s_server, &uri_params);
+
+    // Register WiFi Manager endpoints
+    wifi_manager_register_uri(s_server);
     httpd_register_uri_handler(s_server, &uri_power);
+
+    // Register 404 handler for Captive Portal redirection
+    httpd_register_err_handler(s_server, HTTPD_404_NOT_FOUND, http_404_error_handler);
   } else {
     ESP_LOGI(TAG, "Error starting server!");
   }
