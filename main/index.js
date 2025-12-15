@@ -2,7 +2,6 @@ const canvas = document.getElementById('adcChart');
 const ctx = canvas.getContext('2d');
 const statusEl = document.getElementById('status');
 const deltaPanel = document.getElementById('deltaPanel');
-const infoEl = document.getElementById('info');
 const triggerLevel = document.getElementById('triggerLevel');
 
 // Current active configuration for display scaling
@@ -19,7 +18,6 @@ let activeConfig = {
 let lowRateState = {
   accMin: 4096,
   accMax: 0,
-  accMax: 0,
   progress: 0.0,
   targetCount: 1.0
 };
@@ -28,56 +26,121 @@ let lowRateState = {
 // 0dB: ~950mV, 2.5dB: ~1250mV, 6dB: ~1750mV, 11dB: ~3100mV+ (use 3.3V)
 const ATTEN_TO_MAX_V = [0.95, 1.25, 1.75, 3.3];
 
-// Resize canvas
+// Data buffer
+let countPoints = 0;
+/** @type Array<number> */
+let dataBuffer = [];
+
+// Resize canvas & data
 function resize() {
   canvas.width = canvas.offsetWidth;
   canvas.height = canvas.offsetHeight;
+  countPoints = parseInt(canvas.offsetWidth);
+  newBuffer = new Array(countPoints);
+  for (let i = 0; i < newBuffer.length; i++)
+    newBuffer[i] = i < dataBuffer.length ? dataBuffer[i] : 0;
+  dataBuffer = newBuffer;
 }
+
 window.addEventListener('resize', resize);
 resize();
+
 let lastMousePosition = { x: null, y: null };
 
 let isFrozen = false; // Track freeze state
+canvas.addEventListener('click', () => isFrozen = !isFrozen);
 
-function toggleFreeze() {
-  isFrozen = !isFrozen;
-}
+let viewTransform = {
+  scale: 1,
+  offsetX: 0,
+  offsetY: 0
+};
 
-canvas.addEventListener('click', toggleFreeze);
-
-let referencePosition = null; // Store the reference position for deltas
-
-// Helper function to calculate voltage
-function calculateVoltage(offsetY) {
-  const maxV = ATTEN_TO_MAX_V[activeConfig.atten] || 3.3;
-  return ((canvas.height - offsetY) / canvas.height * maxV).toFixed(2);
-}
-
-// Helper function to calculate effective sample rate
-function getEffectiveSampleRate() {
-  return activeConfig.desiredRate < 1000
+// Helper to get total time (width of buffer in ms)
+function getTotalTimeMs() {
+  const effectiveSampleRate = activeConfig.desiredRate < 1000
     ? activeConfig.desiredRate / lowRateState.targetCount
     : activeConfig.desiredRate;
+
+  const effectivePoints = (activeConfig.desiredRate < 1000)
+    ? countPoints / (lowRateState.targetCount * 2)
+    : countPoints;
+
+  return (effectivePoints / effectiveSampleRate) * 1000;
 }
 
-// Helper function to calculate time offset
-function calculateTimeOffset(offsetX, effectiveSampleRate) {
-  let effectivePoints = maxPoints;
-  if (activeConfig.desiredRate < 1000) {
-    effectivePoints = maxPoints / (lowRateState.targetCount * 2);
+// Helper to get max voltage
+function getMaxVoltage() {
+  return ATTEN_TO_MAX_V[activeConfig.atten] || 3.3;
+}
+
+// Coordinate Transforms
+function XtoTime(px) {
+  const totalTime = getTotalTimeMs();
+  // px = (t / totalTime * width) * scale + offsetX
+  // t = ((px - offsetX) / scale) * (totalTime / width)
+  if (canvas.width === 0) return 0;
+  return ((px - viewTransform.offsetX) / viewTransform.scale) * (totalTime / canvas.width);
+}
+
+function TimeToX(t) {
+  const totalTime = getTotalTimeMs();
+  if (totalTime === 0) return 0;
+  const xp = (t / totalTime) * canvas.width;
+  return xp * viewTransform.scale + viewTransform.offsetX;
+}
+
+function YtoVolts(py) {
+  const maxV = getMaxVoltage();
+  // sy = yp * scale + offsetY
+  // yp = (sy - offsetY) / scale
+  // yp = h * (1 - v/maxV)
+  // v = maxV * (1 - yp/h)
+  if (canvas.height === 0) return 0;
+  const yp = (py - viewTransform.offsetY) / viewTransform.scale;
+  return maxV * (1 - yp / canvas.height);
+}
+
+function VoltsToY(v) {
+  const maxV = getMaxVoltage();
+  const yp = canvas.height * (1 - v / maxV);
+  return yp * viewTransform.scale + viewTransform.offsetY;
+}
+
+canvas.addEventListener('wheel', function (e) {
+  e.preventDefault();
+  const zoomFactor = 1.1;
+  const direction = e.deltaY < 0 ? 1 : -1;
+  const factor = direction > 0 ? zoomFactor : 1 / zoomFactor;
+
+  let newScale = viewTransform.scale * factor;
+
+  if (newScale < 1.001) {
+    // Snap to 100% and reset position
+    newScale = 1.0;
+    viewTransform.offsetX = 0;
+    viewTransform.offsetY = 0;
+  } else if (newScale > 50) {
+    return; // Max limit
+  } else {
+    // Zoom centered on mouse
+    const mx = e.offsetX;
+    const my = e.offsetY;
+
+    viewTransform.offsetX = mx - (mx - viewTransform.offsetX) * factor;
+    viewTransform.offsetY = my - (my - viewTransform.offsetY) * factor;
   }
 
-  const totalTimeMs = (effectivePoints / effectiveSampleRate) * 1000;
-  return ((offsetX / canvas.width) * totalTimeMs).toFixed(2);
-}
+  viewTransform.scale = newScale;
 
-// Helper function to reset lowRateState
-function resetLowRateState() {
-  lowRateState.accMin = 4096;
-  lowRateState.accMax = 0;
-  lowRateState.accMax = 0;
-  // NOTE: We do NOT reset progress to maintain fractional phase alignment across packets
-}
+  draw();
+  // Update info if frozen to show correct values under cursor
+  if (isFrozen) {
+    updateInfo({ offsetX: e.offsetX, offsetY: e.offsetY, pageX: e.pageX, pageY: e.pageY });
+  }
+});
+
+let referencePosition = null; // Store the reference position for deltas
 
 // Helper function to schedule WebSocket reconnection
 function scheduleReconnect() {
@@ -109,10 +172,10 @@ function drawCrosshairs(x, y, color) {
 
 // Refactor duplicated code to use helper functions
 function updateInfo(event) {
-  const voltage = calculateVoltage(event.offsetY);
-  const effectiveSampleRate = getEffectiveSampleRate();
-  const timeOffset = calculateTimeOffset(event.offsetX, effectiveSampleRate);
-  infoEl.textContent = `Voltage: ${voltage}V, Time: ${timeOffset}ms`;
+  // Use raw coordinates or event helpers
+  const voltage = YtoVolts(event.offsetY);
+  const timeOffset = XtoTime(event.offsetX);
+  let info = `<div>${voltage.toFixed(3)}V, ${timeOffset.toFixed(2)}ms</div>`;
 
   // Store the last mouse position
   lastMousePosition.x = event.offsetX;
@@ -120,17 +183,16 @@ function updateInfo(event) {
 
   // Update delta panel position and content if frozen
   if (isFrozen && referencePosition) {
-    const maxV = ATTEN_TO_MAX_V[activeConfig.atten] || 3.3;
-    const deltaVoltage = (referencePosition.voltage - ((canvas.height - lastMousePosition.y) / canvas.height * maxV)).toFixed(2);
-    const deltaTime = (referencePosition.time - ((lastMousePosition.x / canvas.width) * maxPoints / effectiveSampleRate * 1000)).toFixed(2);
+    // Delta uses World Coordinates now
+    const deltaVoltage = (referencePosition.v - voltage);
+    const deltaTime = (referencePosition.t - timeOffset);
 
-    deltaPanel.style.left = `${event.pageX + 10}px`;
-    deltaPanel.style.top = `${event.pageY + 10}px`;
-    deltaPanel.style.display = 'block';
-    deltaPanel.innerHTML = `<div>ΔVoltage: ${deltaVoltage}V</div><div>ΔTime: ${deltaTime}ms</div>`;
-  } else {
-    deltaPanel.style.display = 'none';
+    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms</div>`;
   }
+
+  deltaPanel.style.left = `${event.pageX + 10}px`;
+  deltaPanel.style.top = `${event.pageY + 10}px`;
+  deltaPanel.innerHTML = info;
 
   // Force redraw when frozen
   if (isFrozen) {
@@ -138,29 +200,19 @@ function updateInfo(event) {
   }
 }
 canvas.addEventListener('mousemove', updateInfo);
+canvas.addEventListener('mouseenter', () => deltaPanel.style.display = 'block');
+canvas.addEventListener('mouseleave', () => deltaPanel.style.display = 'none');
 
 canvas.addEventListener('click', (event) => {
   if (isFrozen) {
-    const voltage = calculateVoltage(event.offsetY);
-    const effectiveSampleRate = getEffectiveSampleRate();
-    const timeOffset = calculateTimeOffset(event.offsetX, effectiveSampleRate);
-
-    // Set reference position for deltas
+    // Set reference position in World Coordinates
     referencePosition = {
-      x: event.offsetX,
-      y: event.offsetY,
-      voltage,
-      time: timeOffset
+      t: XtoTime(event.offsetX),
+      v: YtoVolts(event.offsetY)
     };
   }
 });
 
-// Data buffer
-const maxPoints = 4000;
-/** @type Array<number> */
-let dataBuffer = new Array(maxPoints).fill(0);
-
-// WebSocket
 // WebSocket
 let ws;
 let reconnectTimeout;
@@ -194,7 +246,6 @@ function connect() {
       const arr = new Uint16Array(event.data);
       if (arr?.length) {
         processData(arr);
-        // draw(); // Removed: Drawing is now handled by animation loop
       }
     } catch (e) {
       console.error('Parse error:', e);
@@ -263,8 +314,8 @@ function processData(/** @type Uint16Array */newData) {
 }
 
 function pushToBuffer(/** @type Uint16Array */ newItems) {
-  if (newItems.length >= maxPoints) {
-    dataBuffer = Array.from(newItems.slice(-maxPoints));
+  if (newItems.length >= countPoints) {
+    dataBuffer = Array.from(newItems.slice(-countPoints));
   } else {
     dataBuffer.splice(0, newItems.length);
     dataBuffer.push(...newItems);
@@ -308,47 +359,47 @@ function drawGrid(w, h) {
   ctx.fillStyle = '#fff';
   ctx.font = '15px monospace';
 
-  // Y-Axis: Voltage (Nice Ticks)
+  // Determine Visible Voltage Range
+  const minV = YtoVolts(h); // Bottom of screen (normally 0 if unzoomed, or higher/lower if zoomed/panned)
+  const maxV = YtoVolts(0); // Top of screen
+
+  // Calculate handy ticks in the visible range
+  const ticks = calculateNiceTicks(minV, maxV, 12);
+
   ctx.textAlign = 'left';
-  const maxV = ATTEN_TO_MAX_V[activeConfig.atten] || 3.3;
-
-  const ticks = calculateNiceTicks(0, maxV, 6); // Aim for ~6 ticks
-
   for (let val of ticks) {
-    if (val > maxV) continue; // Don't draw above max
+    const y = VoltsToY(val);
 
-    const y = h - (val / maxV * h);
+    // Skip if out of bounds (with a bit of margin)
+    if (y < -20 || y > h + 20) continue;
 
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(w, y);
     ctx.stroke();
 
-    // Don't draw label at 0 (overlaps time)
-    if (val > 0.01) ctx.fillText(val.toFixed(2) + 'V', 5, y + 3);
+    ctx.fillText(val.toFixed(2) + 'V', 5, y + 3);
   }
 
-  // X-Axis: Time
-  // For peak detect mode, we push 2 points per 1 virtual sample.
-  // So the buffer effectively holds (maxPoints / 2) * timePerSample
-  let effectivePoints = maxPoints;
-  const effectiveSampleRate = getEffectiveSampleRate();
+  // Determine Visible Time Range
+  const minT = XtoTime(0);
+  const maxT = XtoTime(w);
 
-  if (activeConfig.desiredRate < 1000) {
-    effectivePoints = maxPoints / (lowRateState.targetCount * 2);
-  }
+  // Create ticks for time
+  // Re-use logic or simple logic
+  const tTicks = calculateNiceTicks(minT, maxT, 12);
 
-  const totalTimeMs = (effectivePoints / effectiveSampleRate) * 1000;
-  const xSteps = 5;
   ctx.textAlign = 'center';
-  for (let i = 0; i <= xSteps; i++) {
-    const x = (i / xSteps * w);
-    const tMs = (i / xSteps * totalTimeMs);
+  for (let t of tTicks) {
+    const x = TimeToX(t);
+
+    if (x < -50 || x > w + 50) continue;
+
     let timeStr;
-    if (tMs >= 1000) {
-      timeStr = (tMs / 1000).toFixed(2) + 's';
+    if (Math.abs(t) >= 1000) {
+      timeStr = (t / 1000).toFixed(2) + 's';
     } else {
-      timeStr = tMs.toFixed(1) + 'ms';
+      timeStr = t.toFixed(1) + 'ms';
     }
 
     ctx.beginPath();
@@ -384,13 +435,32 @@ function draw() {
       break;
     }
   }
+  // Optimize: only draw what's on screen?
+  // Simply iterating all is fine for now (< 2000 points usually)
+  // But we use transforms now.
 
-  let step = w / (maxPoints - 1);
+  // NOTE: dataBuffer index 'i' maps to x pixel in initial scale.
+  // sx = i * scale + offsetX
+  // sy : VoltsToY(val_in_volts) Or simpler:
+  // yp = h - (val / maxAdcVal * h)
+  // sy = yp * scale + offsetY
+
+  ctx.beginPath();
+  // Using loop for continuous line
+  // To avoid performance hit with huge offsets, we could window the loop, but let's stick to simple first
   drawData.forEach((val, i) => {
-    const x = i * step;
-    const y = h - (val / maxAdcVal * h);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    // Original X pixel position (before zoom) was just 'i' (because buffer size ~ canvas width)
+    // Actually, update buffer size is 'countPoints'.
+    // Let's assume 'i' is the initial X coordinate.
+    const sx = i * viewTransform.scale + viewTransform.offsetX;
+
+    // Normalized y calculation from original draw
+    // val is 0..4096.
+    const yp = h - (val / maxAdcVal * h);
+    const sy = yp * viewTransform.scale + viewTransform.offsetY;
+
+    if (i === 0) ctx.moveTo(sx, sy);
+    else ctx.lineTo(sx, sy);
   });
 
   ctx.stroke();
@@ -402,7 +472,10 @@ function draw() {
 
   // Draw reference crosshairs and deltas if frozen
   if (isFrozen && referencePosition) {
-    drawCrosshairs(referencePosition.x, referencePosition.y, '#eab308');
+    // Convert World Reference to Screen
+    const refX = TimeToX(referencePosition.t);
+    const refY = VoltsToY(referencePosition.v);
+    drawCrosshairs(refX, refY, '#eab308');
   }
 }
 
@@ -423,7 +496,9 @@ function setParams() {
     body: JSON.stringify(payload)
   }).then(res => {
     if (res.ok) {
-      resetLowRateState();
+      lowRateState.accMin = 4096;
+      lowRateState.accMax = 0;
+      lowRateState.accMax = 0;
 
       // Update active config
       activeConfig = { ...payload, desiredRate, trigger: parseInt(triggerLevel.value) || 2048 };
