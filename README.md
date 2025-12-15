@@ -74,7 +74,7 @@ If your DHCP server supports it (most seem to), the app sets its hostname and yo
    - Re-configure the WiFi using the "WiFi" button.
    - Power off the device
 
-The LED indicates three conditions:
+The LED indicates one of four conditions:
 * Continuously lit: waiting to attach to a wifi network or starting the wireless AP
 * Equal 1 second flash: in AP mode - connect to the "ESP-Scope" access point
 * Slow, brief flashes: connected to the WiFi SSID set in the web UI
