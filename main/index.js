@@ -77,15 +77,19 @@ let viewTransform = {
 
 // Helper to get total time (width of buffer in ms)
 function getTotalTimeMs() {
-  const effectiveSampleRate = activeConfig.desiredRate < 1000
-    ? activeConfig.desiredRate / lowRateState.targetCount
-    : activeConfig.desiredRate;
+  let msPerPoint;
+  // If we are in low-rate mode (peak detect), we emit 2 points (min/max)
+  // for every 'targetCount' samples of the hardware rate (which is 1kHz).
+  if (activeConfig.desiredRate < 1000) {
+    msPerPoint = lowRateState.targetCount / 2.0;
+  } else {
+    // Normal mode: 1 point = 1 sample
+    msPerPoint = 1000.0 / activeConfig.desiredRate;
+  }
 
-  const effectivePoints = (activeConfig.desiredRate < 1000)
-    ? countPoints / (lowRateState.targetCount * 2)
-    : countPoints;
-
-  return (effectivePoints / effectiveSampleRate) * 1000;
+  // The total time displayed is simply the time-per-pixel * number-of-pixels
+  // assuming 1 pixel = 1 point at scale 1.0.
+  return msPerPoint * canvas.width;
 }
 
 // Helper to get max voltage
@@ -607,7 +611,8 @@ function loadStoredConfig() {
 }
 
 document.getElementById('reconnectBtn').addEventListener('click', connect);
-document.querySelectorAll('#sampleRate, #bitWidth, #atten, #testHz, #triggerLevel').forEach(input => input.addEventListener('change', setParams));
+document.querySelectorAll('#sampleRate, #bitWidth, #atten, #testHz').forEach(input => input.addEventListener('change', setParams));
+triggerLevel.addEventListener('change', () => localStorage.setItem('esp32_adc_config', JSON.stringify(activeConfig)));
 document.getElementById('resetBtn').addEventListener('click', () => {
   localStorage.clear();
   window.location.reload();
