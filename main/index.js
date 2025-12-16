@@ -1,9 +1,3 @@
-const canvas = document.getElementById('adcChart');
-const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
-const deltaPanel = document.getElementById('deltaPanel');
-const triggerLevel = document.getElementById('triggerLevel');
-
 // Current active configuration for display scaling
 let activeConfig = {
   desiredRate: 10000,
@@ -11,7 +5,8 @@ let activeConfig = {
   atten: 3, // 11dB Default
   bit_width: 12,
   test_hz: 100,
-  trigger: 2048
+  trigger: 2048,
+  invert: false
 };
 
 // Accumulator for virtual low sample rates
@@ -27,19 +22,43 @@ let lowRateState = {
 const ATTEN_TO_MAX_V = [0.95, 1.25, 1.75, 3.3];
 
 // Data buffer
-let countPoints = 0;
+const countPoints = 4000;
 /** @type Array<number> */
-let dataBuffer = [];
+let dataBuffer = new Array(countPoints).fill(0);
+
+/** @type HTMLCanvas */ const canvas = document.getElementById('adcChart');
+const ctx = canvas.getContext('2d');
+const statusEl = document.getElementById('status');
+const deltaPanel = document.getElementById('deltaPanel');
+const triggerLevel = document.getElementById('triggerLevel');
+
+function triggerColor() {
+  activeConfig.trigger = triggerLevel.value;
+  const value = (triggerLevel.value - triggerLevel.min) / (triggerLevel.max - triggerLevel.min) * 100;
+  triggerLevel.style.background = triggerLevel.invert
+    ? `linear-gradient(to bottom, #00000070 0%, #ff020270  ${value}%, #1302ff70 ${value}%, #00000070 100%)`
+    : `linear-gradient(to bottom, #00000070 0%, #1302ff70 ${value}%, #ff020270  ${value}%, #00000070  100%)`
+}
+
+triggerLevel.addEventListener('input', triggerColor);
+triggerLevel.addEventListener('mousedown', function() {
+  this.downValue = this.value;
+});
+triggerLevel.addEventListener('mouseup', function() {
+  if (this.downValue == this.value) {
+    this.invert = !this.invert;
+    activeConfig.invert = this.invert;
+    triggerColor();
+    this.dispatchEvent(new Event("change"));
+  }
+  delete this.downValue;
+});
+triggerColor();
 
 // Resize canvas & data
 function resize() {
   canvas.width = canvas.offsetWidth;
   canvas.height = canvas.offsetHeight;
-  countPoints = parseInt(canvas.offsetWidth);
-  newBuffer = new Array(countPoints);
-  for (let i = 0; i < newBuffer.length; i++)
-    newBuffer[i] = i < dataBuffer.length ? dataBuffer[i] : 0;
-  dataBuffer = newBuffer;
 }
 
 window.addEventListener('resize', resize);
@@ -184,10 +203,10 @@ function updateInfo(event) {
   // Update delta panel position and content if frozen
   if (isFrozen && referencePosition) {
     // Delta uses World Coordinates now
-    const deltaVoltage = (referencePosition.v - voltage);
-    const deltaTime = (referencePosition.t - timeOffset);
+    const deltaVoltage = Math.abs(referencePosition.v - voltage);
+    const deltaTime = Math.abs(referencePosition.t - timeOffset);
 
-    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms</div>`;
+    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms (${(1000/deltaTime).toFixed(2)} Hz)</div>`;
   }
 
   deltaPanel.style.left = `${event.pageX + 10}px`;
@@ -427,18 +446,31 @@ function draw() {
   const maxAdcVal = 4096; // 12-bit fixed scale
 
   // Trigger values
-  let drawData = dataBuffer;
-  const triggerVal = parseInt(triggerLevel.value) || 2048;
-  for (let i = 0; i < dataBuffer.length; i++) {
-    if (dataBuffer[i] < triggerVal && dataBuffer[i + 1] > triggerVal) {
-      drawData = dataBuffer.slice(i);
-      break;
+  let drawIdx = dataBuffer.length - w;
+  if (drawIdx < 0)
+    drawIdx = 0;
+  else {
+    const triggerVal = (4096 - (parseInt(triggerLevel.value) || 2048));
+    if (triggerLevel.invert) {
+      while (drawIdx >= 0) {
+        if (dataBuffer[drawIdx] < triggerVal && dataBuffer[drawIdx + 1] > triggerVal) {
+          break;
+        }
+        drawIdx -= 1;
+      }
+
+    } else {
+      while (drawIdx >= 0) {
+        if (dataBuffer[drawIdx] > triggerVal && dataBuffer[drawIdx + 1] < triggerVal) {
+          break;
+        }
+        drawIdx -= 1;
+      }
+    }
+    if (drawIdx < 0) {
+      drawIdx = dataBuffer.length - w;
     }
   }
-  // Optimize: only draw what's on screen?
-  // Simply iterating all is fine for now (< 2000 points usually)
-  // But we use transforms now.
-
   // NOTE: dataBuffer index 'i' maps to x pixel in initial scale.
   // sx = i * scale + offsetX
   // sy : VoltsToY(val_in_volts) Or simpler:
@@ -447,8 +479,8 @@ function draw() {
 
   ctx.beginPath();
   // Using loop for continuous line
-  // To avoid performance hit with huge offsets, we could window the loop, but let's stick to simple first
-  drawData.forEach((val, i) => {
+  // To avoid performance hit with huge offsets, we window the loop
+  dataBuffer.slice(drawIdx).forEach((val, i) => {
     // Original X pixel position (before zoom) was just 'i' (because buffer size ~ canvas width)
     // Actually, update buffer size is 'countPoints'.
     // Let's assume 'i' is the initial X coordinate.
@@ -521,7 +553,9 @@ function loadStoredConfig() {
       if (cfg.bit_width) document.getElementById('bitWidth').value = cfg.bit_width;
       if (cfg.atten !== undefined) document.getElementById('atten').value = cfg.atten;
       if (cfg.test_hz) document.getElementById('testHz').value = cfg.test_hz;
-      if (cfg.trigger) document.getElementById('triggerLevel').value = cfg.trigger;
+      if (cfg.invert) triggerLevel.invert = Boolean(cfg.invert);
+      if (cfg.trigger) triggerLevel.value = cfg.trigger;
+      triggerColor();
       setParams();
     } catch (e) {
       console.error("Failed to load config", e);
