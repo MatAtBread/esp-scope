@@ -41,10 +41,10 @@ function triggerColor() {
 }
 
 triggerLevel.addEventListener('input', triggerColor);
-triggerLevel.addEventListener('mousedown', function() {
+triggerLevel.addEventListener('mousedown', function () {
   this.downValue = this.value;
 });
-triggerLevel.addEventListener('mouseup', function() {
+triggerLevel.addEventListener('mouseup', function () {
   if (this.downValue == this.value) {
     this.invert = !this.invert;
     activeConfig.invert = this.invert;
@@ -128,6 +128,11 @@ function VoltsToY(v) {
 
 canvas.addEventListener('wheel', function (e) {
   e.preventDefault();
+  if (e.deltaX > 0) {
+
+  } else if (e.deltaX < 0) {
+
+  }
   const zoomFactor = 1.1;
   const direction = e.deltaY < 0 ? 1 : -1;
   const factor = direction > 0 ? zoomFactor : 1 / zoomFactor;
@@ -206,7 +211,7 @@ function updateInfo(event) {
     const deltaVoltage = Math.abs(referencePosition.v - voltage);
     const deltaTime = Math.abs(referencePosition.t - timeOffset);
 
-    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms (${(1000/deltaTime).toFixed(2)} Hz)</div>`;
+    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms (${(1000 / deltaTime).toFixed(2)} Hz)</div>`;
   }
 
   deltaPanel.style.left = `${event.pageX + 10}px`;
@@ -378,14 +383,54 @@ function drawGrid(w, h) {
   ctx.fillStyle = '#fff';
   ctx.font = '15px monospace';
 
+  // Helper to draw text with lozenge background
+  const drawLabel = (text, x, y, align) => {
+    ctx.save();
+    const paddingX = 6;
+    const paddingY = 3;
+    const fontSize = 13;
+
+    // Set font to measure correctly
+    ctx.font = `${fontSize}px monospace`;
+    const metrics = ctx.measureText(text);
+    const textWidth = metrics.width;
+
+    // Calculate box position
+    // We align the text at (x,y) with specified 'align'
+    // y is baseline. Visual center of 15px font is roughly y - 4
+
+    const boxHeight = fontSize + paddingY * 2;
+    const boxWidth = textWidth + paddingX * 2;
+
+    let boxX;
+    if (align === 'left') boxX = x;
+    else if (align === 'center') boxX = x - textWidth / 2;
+    else if (align === 'right') boxX = x - textWidth;
+
+    // Adjust for padding and visual centering
+    boxX -= paddingX;
+    const boxY = (y - 4) - boxHeight / 2; // Center box around text visual center
+
+    // Draw semi-transparent lozenge
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+    ctx.beginPath();
+    ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 8);
+    ctx.fill();
+
+    // Draw text
+    ctx.fillStyle = 'black';
+    ctx.textAlign = align;
+    ctx.fillText(text, x, y);
+    ctx.restore();
+  };
+
   // Determine Visible Voltage Range
   const minV = YtoVolts(h); // Bottom of screen (normally 0 if unzoomed, or higher/lower if zoomed/panned)
   const maxV = YtoVolts(0); // Top of screen
 
   // Calculate handy ticks in the visible range
-  const ticks = calculateNiceTicks(minV, maxV, 12);
+  const ticks = calculateNiceTicks(minV, maxV, 8);
 
-  ctx.textAlign = 'left';
   for (let val of ticks) {
     const y = VoltsToY(val);
 
@@ -397,7 +442,7 @@ function drawGrid(w, h) {
     ctx.lineTo(w, y);
     ctx.stroke();
 
-    ctx.fillText(val.toFixed(2) + 'V', 5, y + 3);
+    drawLabel(val.toFixed(2) + 'V', 5, y + 4, 'left');
   }
 
   // Determine Visible Time Range
@@ -406,9 +451,8 @@ function drawGrid(w, h) {
 
   // Create ticks for time
   // Re-use logic or simple logic
-  const tTicks = calculateNiceTicks(minT, maxT, 12);
+  const tTicks = calculateNiceTicks(minT, maxT, 8);
 
-  ctx.textAlign = 'center';
   for (let t of tTicks) {
     const x = TimeToX(t);
 
@@ -426,7 +470,7 @@ function drawGrid(w, h) {
     ctx.lineTo(x, h);
     ctx.stroke();
 
-    ctx.fillText(timeStr, x, h - 5);
+    drawLabel(timeStr, x, h - 5, 'center');
   }
 }
 
