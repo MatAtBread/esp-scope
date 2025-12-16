@@ -67,7 +67,9 @@
             width: 4px;
             margin: 0;
             z-index: 10;
-            -webkit-appearance: none; /* Reset to control gradient */
+            -webkit-appearance: none;
+            border: 1px solid #333;
+            /* Reset to control gradient */
             appearance: none;
             writing-mode: vertical-lr;
         }
@@ -240,10 +242,11 @@
             </div>
 
             <!-- Floating Trigger Slider -->
-            <input type="range" id="triggerLevel" orient="vertical" min="0" max="4096" value="2048">
+            <input type="range" id="triggerLevel" orient="vertical" min="-1" max="4097" value="2048">
 
             <!-- Overlay Status -->
             <div class="status-overlay">
+                <div class="status" id="trigger-status"></div>
                 <div class="status" id="status">Connecting...</div>
                 <button id="reconnectBtn"
                     style="display:none; background:#eab308; color:#000; padding:4px 8px; font-size:0.8rem;">Reconnect</button>
@@ -289,7 +292,8 @@
                 </div>
 
                 <div class="btn-group">
-                    <button title="Reset to default rate, attenuation & test settings" id="resetBtn" class="secondary">&olarr;</button>
+                    <button title="Reset to default rate, attenuation & test settings" id="resetBtn"
+                        class="secondary">&olarr;</button>
                     <button title="Change wifi access point" id="wifiBtn" class="secondary">&#128732;</button>
                     <button title="Power off the esp-scope" id="powerOff" class="secondary">&#9889;</button>
                 </div>

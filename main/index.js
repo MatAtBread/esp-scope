@@ -1,4 +1,32 @@
-// Current active configuration for display scaling
+/// <reference lib="dom" />
+
+/*
+ * ==========================================
+ * 1. Constants & Configuration
+ * ==========================================
+ */
+
+// Approximate full-scale voltages for ESP32C6/ESP32 ADC attenuations
+// 0dB: ~950mV, 2.5dB: ~1250mV, 6dB: ~1750mV, 11dB: ~3100mV+ (use 3.3V)
+/** @type {number[]} */
+const ATTEN_TO_MAX_V = [0.95, 1.25, 1.75, 3.3];
+
+// Data buffer size
+/** @type {number} */
+const countPoints = 4000;
+
+/**
+ * @typedef {Object} ActiveConfig
+ * @property {number} desiredRate - Desired sample rate in Hz
+ * @property {number} sample_rate - Actual hardware sample rate
+ * @property {number} atten - Attenuation setting index
+ * @property {number} bit_width - Bit width (e.g. 12)
+ * @property {number} test_hz - Test signal frequency for simulation
+ * @property {number} trigger - Trigger level (-1-4097)
+ * @property {boolean} invert - Whether trigger logic is inverted
+ */
+
+/** @type {ActiveConfig} */
 let activeConfig = {
   desiredRate: 10000,
   sample_rate: 10000,
@@ -9,7 +37,17 @@ let activeConfig = {
   invert: false
 };
 
-// Accumulator for virtual low sample rates
+/**
+ * @typedef {Object} LowRateState
+ * @property {number} accMin - Accumulated minimum value
+ * @property {number} accMax - Accumulated maximum value
+ * @property {number} accSum - Accumulated sum for average
+ * @property {number} accCount - Count of samples in accumulator
+ * @property {number} progress - Fractional progress counter
+ * @property {number} targetCount - Target samples per output point
+ */
+
+/** @type {LowRateState} */
 let lowRateState = {
   accMin: 4096,
   accMax: 0,
@@ -19,65 +57,87 @@ let lowRateState = {
   targetCount: 1.0
 };
 
-// Approximate full-scale voltages for ESP32C6/ESP32 ADC attenuations
-// 0dB: ~950mV, 2.5dB: ~1250mV, 6dB: ~1750mV, 11dB: ~3100mV+ (use 3.3V)
-const ATTEN_TO_MAX_V = [0.95, 1.25, 1.75, 3.3];
 
-// Data buffer
-const countPoints = 4000;
-/** @type Array<number> */
+/*
+ * ==========================================
+ * 2. Global UI Elements & State
+ * ==========================================
+ */
+
+/** @type {HTMLCanvasElement} */ const canvas = /** @type {HTMLCanvasElement} */ (document.getElementById('adcChart'));
+/** @type {CanvasRenderingContext2D} */ const ctx = canvas.getContext('2d');
+/** @type {HTMLElement} */ const statusEl = document.getElementById('status');
+/** @type {HTMLElement} */ const triggerStatusEl = document.getElementById('trigger-status');
+/** @type {HTMLElement} */ const deltaPanel = document.getElementById('deltaPanel');
+/** @type {HTMLInputElement & { invert?: boolean, downValue?: string }} */ const triggerLevel = /** @type {HTMLInputElement & { invert?: boolean, downValue?: string }} */ (document.getElementById('triggerLevel'));
+
+// Config Elements
+/** @type {HTMLElement} */ const reconnectBtn = document.getElementById('reconnectBtn');
+/** @type {HTMLSelectElement} */ const sampleRateSelect = /** @type {HTMLSelectElement} */ (document.getElementById('sampleRate'));
+/** @type {HTMLSelectElement} */ const bitWidthSelect = /** @type {HTMLSelectElement} */ (document.getElementById('bitWidth'));
+/** @type {HTMLSelectElement} */ const attenSelect = /** @type {HTMLSelectElement} */ (document.getElementById('atten'));
+/** @type {HTMLSelectElement} */ const testHzSelect = /** @type {HTMLSelectElement} */ (document.getElementById('testHz'));
+/** @type {HTMLButtonElement} */ const resetBtn = /** @type {HTMLButtonElement} */ (document.getElementById('resetBtn'));
+/** @type {HTMLButtonElement} */ const powerOffBtn = /** @type {HTMLButtonElement} */ (document.getElementById('powerOff'));
+
+// Wifi Elements
+/** @type {HTMLElement} */ const wifiModal = document.getElementById('wifiModal');
+/** @type {HTMLButtonElement} */ const wifiBtn = /** @type {HTMLButtonElement} */ (document.getElementById('wifiBtn'));
+/** @type {HTMLElement} */ const closeWifiBtn = document.getElementById('closeWifi');
+/** @type {HTMLButtonElement} */ const saveWifiBtn = /** @type {HTMLButtonElement} */ (document.getElementById('saveWifi'));
+/** @type {HTMLInputElement} */ const wifiSsidInput = /** @type {HTMLInputElement} */ (document.getElementById('wifiSsid'));
+/** @type {HTMLInputElement} */ const wifiPassInput = /** @type {HTMLInputElement} */ (document.getElementById('wifiPass'));
+
+/**
+ * @typedef {Object} DownsampledPoint
+ * @property {number} min
+ * @property {number} max
+ * @property {number} avg
+ */
+
+/** @type {Array<number|DownsampledPoint>} */
 let dataBuffer = new Array(countPoints).fill(0);
 
-/** @type HTMLCanvas */ const canvas = document.getElementById('adcChart');
-const ctx = canvas.getContext('2d');
-const statusEl = document.getElementById('status');
-const deltaPanel = document.getElementById('deltaPanel');
-const triggerLevel = document.getElementById('triggerLevel');
-
-function triggerColor() {
-  activeConfig.trigger = triggerLevel.value;
-  const value = (triggerLevel.value - triggerLevel.min) / (triggerLevel.max - triggerLevel.min) * 100;
-  triggerLevel.style.background = triggerLevel.invert
-    ? `linear-gradient(to bottom, #00000070 0%, #ff020270  ${value}%, #1302ff70 ${value}%, #00000070 100%)`
-    : `linear-gradient(to bottom, #00000070 0%, #1302ff70 ${value}%, #ff020270  ${value}%, #00000070  100%)`
-}
-
-triggerLevel.addEventListener('input', triggerColor);
-triggerLevel.addEventListener('mousedown', function () {
-  this.downValue = this.value;
-});
-triggerLevel.addEventListener('mouseup', function () {
-  if (this.downValue == this.value) {
-    this.invert = !this.invert;
-    activeConfig.invert = this.invert;
-    triggerColor();
-    this.dispatchEvent(new Event("change"));
-  }
-  delete this.downValue;
-});
-triggerColor();
-
-// Resize canvas & data
-function resize() {
-  canvas.width = canvas.offsetWidth;
-  canvas.height = canvas.offsetHeight;
-}
-
-window.addEventListener('resize', resize);
-resize();
-
+/** @type {{x: number|null, y: number|null}} */
 let lastMousePosition = { x: null, y: null };
 
-let isFrozen = false; // Track freeze state
-canvas.addEventListener('click', () => isFrozen = !isFrozen);
+/** @type {boolean} */
+let isFrozen = false;
 
+/** @type {{t: number, v: number}|null} */
+let referencePosition = null; // Store the reference position for deltas
+
+/**
+ * @typedef {Object} ViewTransform
+ * @property {number} scale
+ * @property {number} offsetX
+ * @property {number} offsetY
+ */
+
+/** @type {ViewTransform} */
 let viewTransform = {
   scale: 1,
   offsetX: 0,
   offsetY: 0
 };
 
-// Helper to get total time (width of buffer in ms)
+// WebSocket vars
+/** @type {WebSocket} */
+let ws;
+/** @type {number} */
+let reconnectTimeout;
+
+
+/*
+ * ==========================================
+ * 3. Coordinate System & Math Utils
+ * ==========================================
+ */
+
+/**
+ * Helper to get total time (width of buffer in ms)
+ * @returns {number} Total time in milliseconds
+ */
 function getTotalTimeMs() {
   let msPerPoint;
   // If we are in low-rate mode (peak detect), we emit 1 point (object)
@@ -94,211 +154,115 @@ function getTotalTimeMs() {
   return msPerPoint * canvas.width;
 }
 
-// Helper to get max voltage
+/**
+ * Helper to get max voltage
+ * @returns {number} Max voltage stored in ATTEN_TO_MAX_V or 3.3
+ */
 function getMaxVoltage() {
   return ATTEN_TO_MAX_V[activeConfig.atten] || 3.3;
 }
 
-// Coordinate Transforms
+/**
+ * Convert X pixel coordinate to Time (ms)
+ * @param {number} px - Pixel X coordinate
+ * @returns {number} Time in milliseconds
+ */
 function XtoTime(px) {
   const totalTime = getTotalTimeMs();
-  // px = (t / totalTime * width) * scale + offsetX
-  // t = ((px - offsetX) / scale) * (totalTime / width)
   if (canvas.width === 0) return 0;
   return ((px - viewTransform.offsetX) / viewTransform.scale) * (totalTime / canvas.width);
 }
 
+/**
+ * Convert Time (ms) to X pixel coordinate
+ * @param {number} t - Time in milliseconds
+ * @returns {number} Pixel X coordinate
+ */
 function TimeToX(t) {
   const totalTime = getTotalTimeMs();
-  if (totalTime === 0) return 0;
+  if (totalTime === 0 || canvas.width === 0) return 0;
   const xp = (t / totalTime) * canvas.width;
   return xp * viewTransform.scale + viewTransform.offsetX;
 }
 
+/**
+ * Convert Y pixel coordinate to Voltage
+ * @param {number} py - Pixel Y coordinate
+ * @returns {number} Voltage in volts
+ */
 function YtoVolts(py) {
   const maxV = getMaxVoltage();
-  // sy = yp * scale + offsetY
-  // yp = (sy - offsetY) / scale
-  // yp = h * (1 - v/maxV)
-  // v = maxV * (1 - yp/h)
   if (canvas.height === 0) return 0;
   const yp = (py - viewTransform.offsetY) / viewTransform.scale;
   return maxV * (1 - yp / canvas.height);
 }
 
+/**
+ * Convert Voltage to Y pixel coordinate
+ * @param {number} v - Voltage in volts
+ * @returns {number} Pixel Y coordinate
+ */
 function VoltsToY(v) {
   const maxV = getMaxVoltage();
   const yp = canvas.height * (1 - v / maxV);
   return yp * viewTransform.scale + viewTransform.offsetY;
 }
 
-canvas.addEventListener('wheel', function (e) {
-  e.preventDefault();
-  if (e.deltaX > 0) {
-
-  } else if (e.deltaX < 0) {
-
-  }
-  const zoomFactor = 1.1;
-  const direction = e.deltaY < 0 ? 1 : -1;
-  const factor = direction > 0 ? zoomFactor : 1 / zoomFactor;
-
-  let newScale = viewTransform.scale * factor;
-
-  if (newScale < 1.001) {
-    // Snap to 100% and reset position
-    newScale = 1.0;
-    viewTransform.offsetX = 0;
-    viewTransform.offsetY = 0;
-  } else if (newScale > 50) {
-    return; // Max limit
+/**
+ * Nice Number Generator for Grid
+ * @param {number} range - Range of values
+ * @param {boolean} round - Whether to round to nice fraction
+ * @returns {number} Nice number interval
+ */
+function niceNum(range, round) {
+  const exponent = Math.floor(Math.log10(range));
+  const fraction = range / Math.pow(10, exponent);
+  let niceFraction;
+  if (round) {
+    if (fraction < 1.5) niceFraction = 1;
+    else if (fraction < 3) niceFraction = 2;
+    else if (fraction < 7) niceFraction = 5;
+    else niceFraction = 10;
   } else {
-    // Zoom centered on mouse
-    const mx = e.offsetX;
-    const my = e.offsetY;
-
-    viewTransform.offsetX = mx - (mx - viewTransform.offsetX) * factor;
-    viewTransform.offsetY = my - (my - viewTransform.offsetY) * factor;
+    if (fraction <= 1) niceFraction = 1;
+    else if (fraction <= 2) niceFraction = 2;
+    else if (fraction <= 5) niceFraction = 5;
+    else niceFraction = 10;
   }
-
-  viewTransform.scale = newScale;
-  if (newScale < 1.001) {
-    statusEl.textContent = 'Connected via WebSocket';
-  } else {
-    statusEl.textContent = 'Scaled to ' + newScale.toFixed(2) + 'x';
-  }
-
-  draw();
-  // Update info if frozen to show correct values under cursor
-  if (isFrozen) {
-    updateInfo({ offsetX: e.offsetX, offsetY: e.offsetY, pageX: e.pageX, pageY: e.pageY });
-  }
-});
-
-let referencePosition = null; // Store the reference position for deltas
-
-// Helper function to schedule WebSocket reconnection
-function scheduleReconnect() {
-  statusEl.textContent = 'Disconnected. Retrying in 2s...';
-  statusEl.style.color = '#ef4444';
-  reconnectTimeout = setTimeout(connect, 2000);
+  return niceFraction * Math.pow(10, exponent);
 }
 
-// Helper function to draw crosshairs
-function drawCrosshairs(x, y, color) {
-  ctx.setLineDash([5, 5]);
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 1;
-
-  // Draw vertical line
-  ctx.beginPath();
-  ctx.moveTo(x, 0);
-  ctx.lineTo(x, canvas.height);
-  ctx.stroke();
-
-  // Draw horizontal line
-  ctx.beginPath();
-  ctx.moveTo(0, y);
-  ctx.lineTo(canvas.width, y);
-  ctx.stroke();
-
-  ctx.setLineDash([]);
+/**
+ * Calculate nice tick marks for axis
+ * @param {number} min - Minimum value
+ * @param {number} max - Maximum value
+ * @param {number} maxTicks - Maximum number of ticks
+ * @returns {number[]} Array of tick values
+ */
+function calculateNiceTicks(min, max, maxTicks) {
+  const range = niceNum(max - min, false);
+  const tickSpacing = niceNum(range / (maxTicks - 1), true);
+  const niceMin = Math.floor(min / tickSpacing) * tickSpacing;
+  const niceMax = Math.ceil(max / tickSpacing) * tickSpacing;
+  const ticks = [];
+  for (let t = niceMin; t <= niceMax + 0.00001; t += tickSpacing) {
+    ticks.push(t);
+  }
+  return ticks;
 }
 
-// Refactor duplicated code to use helper functions
-function updateInfo(event) {
-  // Use raw coordinates or event helpers
-  const voltage = YtoVolts(event.offsetY);
-  const timeOffset = XtoTime(event.offsetX);
-  let info = `<div>${voltage.toFixed(3)}V, ${timeOffset.toFixed(2)}ms</div>`;
 
-  // Store the last mouse position
-  lastMousePosition.x = event.offsetX;
-  lastMousePosition.y = event.offsetY;
+/*
+ * ==========================================
+ * 4. Data Processing
+ * ==========================================
+ */
 
-  // Update delta panel position and content if frozen
-  if (isFrozen && referencePosition) {
-    // Delta uses World Coordinates now
-    const deltaVoltage = Math.abs(referencePosition.v - voltage);
-    const deltaTime = Math.abs(referencePosition.t - timeOffset);
-
-    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms (${(1000 / deltaTime).toFixed(2)} Hz)</div>`;
-  }
-
-  deltaPanel.style.left = `${event.pageX + 10}px`;
-  deltaPanel.style.top = `${event.pageY + 10}px`;
-  deltaPanel.innerHTML = info;
-
-  // Force redraw when frozen
-  if (isFrozen) {
-    draw();
-  }
-}
-canvas.addEventListener('mousemove', updateInfo);
-canvas.addEventListener('mouseenter', () => deltaPanel.style.display = 'block');
-canvas.addEventListener('mouseleave', () => deltaPanel.style.display = 'none');
-
-canvas.addEventListener('click', (event) => {
-  if (isFrozen) {
-    // Set reference position in World Coordinates
-    referencePosition = {
-      t: XtoTime(event.offsetX),
-      v: YtoVolts(event.offsetY)
-    };
-  }
-});
-
-// WebSocket
-let ws;
-let reconnectTimeout;
-
-function connect() {
-  loadStoredConfig();
-
-  clearTimeout(reconnectTimeout);
-  const btn = document.getElementById('reconnectBtn');
-  if (btn) btn.style.display = 'none';
-
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/signal`;
-  // For local testing without ESP hardware, uncomment next line:
-  // const wsUrl = 'ws://localhost:8080/signal';
-
-  ws = new WebSocket(wsUrl);
-  ws.binaryType = 'arraybuffer';
-  ws.onopen = () => {
-    statusEl.textContent = 'Connected via WebSocket';
-    statusEl.style.color = '#4ade80';
-    ws.send("hello");
-  };
-
-  ws.onclose = () => {
-    scheduleReconnect();
-  };
-
-  ws.onmessage = (event) => {
-    try {
-      const arr = new Uint16Array(event.data);
-      if (arr?.length) {
-        processData(arr);
-      }
-    } catch (e) {
-      console.error('Parse error:', e);
-    }
-  };
-}
-
-// Animation loop
-function animationLoop() {
-  if (!isFrozen) {
-    draw();
-  }
-  requestAnimationFrame(animationLoop);
-}
-// Start the loop
-requestAnimationFrame(animationLoop);
-
-function processData(/** @type Uint16Array */newData) {
+/**
+ * Process incoming WebSocket data
+ * @param {Uint16Array} newData - Array of ADC samples
+ */
+function processData(newData) {
   if (isFrozen) {
     return; // Skip updating the buffer when frozen
   }
@@ -313,9 +277,10 @@ function processData(/** @type Uint16Array */newData) {
 
   if (lowRateState.targetCount <= 1) {
     // Passthrough mode
-    pushToBuffer(newData);
+    pushToBuffer(/** @type {Array<number>} */(Array.from(newData)));
   } else {
     // Accumulation mode (Peak Detect) with Fractional Resampling
+    /** @type {DownsampledPoint[]} */
     let pointsToPush = [];
     let idx = 0;
 
@@ -356,7 +321,11 @@ function processData(/** @type Uint16Array */newData) {
   }
 }
 
-function pushToBuffer(/** @type Array<number|object> */ newItems) {
+/**
+ * Push new items to the rolling data buffer
+ * @param {Array<number|DownsampledPoint>} newItems - New items to add
+ */
+function pushToBuffer(newItems) {
   if (newItems.length >= countPoints) {
     dataBuffer = Array.from(newItems.slice(-countPoints));
   } else {
@@ -365,37 +334,18 @@ function pushToBuffer(/** @type Array<number|object> */ newItems) {
   }
 }
 
-// Nice Number Generator
-function niceNum(range, round) {
-  const exponent = Math.floor(Math.log10(range));
-  const fraction = range / Math.pow(10, exponent);
-  let niceFraction;
-  if (round) {
-    if (fraction < 1.5) niceFraction = 1;
-    else if (fraction < 3) niceFraction = 2;
-    else if (fraction < 7) niceFraction = 5;
-    else niceFraction = 10;
-  } else {
-    if (fraction <= 1) niceFraction = 1;
-    else if (fraction <= 2) niceFraction = 2;
-    else if (fraction <= 5) niceFraction = 5;
-    else niceFraction = 10;
-  }
-  return niceFraction * Math.pow(10, exponent);
-}
 
-function calculateNiceTicks(min, max, maxTicks) {
-  const range = niceNum(max - min, false);
-  const tickSpacing = niceNum(range / (maxTicks - 1), true);
-  const niceMin = Math.floor(min / tickSpacing) * tickSpacing;
-  const niceMax = Math.ceil(max / tickSpacing) * tickSpacing;
-  const ticks = [];
-  for (let t = niceMin; t <= niceMax + 0.00001; t += tickSpacing) {
-    ticks.push(t);
-  }
-  return ticks;
-}
+/*
+ * ==========================================
+ * 5. Visualization & Rendering
+ * ==========================================
+ */
 
+/**
+ * Draw the grid and axis labels
+ * @param {number} w - Canvas width
+ * @param {number} h - Canvas height
+ */
 function drawGrid(w, h) {
   ctx.strokeStyle = '#333';
   ctx.lineWidth = 1;
@@ -415,9 +365,6 @@ function drawGrid(w, h) {
     const textWidth = metrics.width;
 
     // Calculate box position
-    // We align the text at (x,y) with specified 'align'
-    // y is baseline. Visual center of 15px font is roughly y - 4
-
     const boxHeight = fontSize + paddingY * 2;
     const boxWidth = textWidth + paddingX * 2;
 
@@ -428,7 +375,7 @@ function drawGrid(w, h) {
 
     // Adjust for padding and visual centering
     boxX -= paddingX;
-    const boxY = (y - 4) - boxHeight / 2; // Center box around text visual center
+    const boxY = (y - 4) - boxHeight / 2;
 
     // Draw semi-transparent lozenge
     ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
@@ -444,8 +391,8 @@ function drawGrid(w, h) {
   };
 
   // Determine Visible Voltage Range
-  const minV = YtoVolts(h); // Bottom of screen (normally 0 if unzoomed, or higher/lower if zoomed/panned)
-  const maxV = YtoVolts(0); // Top of screen
+  const minV = YtoVolts(h);
+  const maxV = YtoVolts(0);
 
   // Calculate handy ticks in the visible range
   const ticks = calculateNiceTicks(minV, maxV, 8);
@@ -468,8 +415,6 @@ function drawGrid(w, h) {
   const minT = XtoTime(0);
   const maxT = XtoTime(w);
 
-  // Create ticks for time
-  // Re-use logic or simple logic
   const tTicks = calculateNiceTicks(minT, maxT, 8);
 
   for (let t of tTicks) {
@@ -493,15 +438,39 @@ function drawGrid(w, h) {
   }
 }
 
+/**
+ * Draw crosshairs at specific position
+ * @param {number} x - X coordinate
+ * @param {number} y - Y coordinate
+ * @param {string} color - Color string
+ */
+function drawCrosshairs(x, y, color) {
+  ctx.setLineDash([5, 5]);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+
+  // Draw vertical line
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, canvas.height);
+  ctx.stroke();
+
+  // Draw horizontal line
+  ctx.beginPath();
+  ctx.moveTo(0, y);
+  ctx.lineTo(canvas.width, y);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+}
+
+/**
+ * Main draw loop
+ */
 function draw() {
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-
-  // Always draw the last waveform data
-  ctx.beginPath();
-  ctx.strokeStyle = '#4ade80';
-  ctx.lineWidth = 2;
 
   const maxAdcVal = 4096; // 12-bit fixed scale
 
@@ -535,32 +504,25 @@ function draw() {
         drawIdx -= 1;
       }
     }
+
+    const triggerVolts = ((maxAdcVal - activeConfig.trigger) * getMaxVoltage() / maxAdcVal).toFixed(2) + "V";
+    const triggerDir = triggerLevel.invert ? '&#x1F809;' : '&#x1F80B;';
     if (drawIdx < 0) {
       drawIdx = dataBuffer.length - w;
+      triggerStatusEl.innerHTML = `<span style="color: #c22727;">${triggerVolts} ${triggerDir} No trigger</span>`;
+    } else {
+      triggerStatusEl.innerHTML = `<span style="color: #4ade80;">${triggerVolts} ${triggerDir} Triggered</span>`;
     }
   }
-  // NOTE: dataBuffer index 'i' maps to x pixel in initial scale.
-  // sx = i * scale + offsetX
-  // sy : VoltsToY(val_in_volts) Or simpler:
-  // yp = h - (val / maxAdcVal * h)
-  // sy = yp * scale + offsetY
 
   // Pass 1: Draw Min/Max ranges for downsampled data
   ctx.lineWidth = 1;
   ctx.strokeStyle = '#2b7044'; // Dark green
   ctx.beginPath();
-  dataBuffer.slice(drawIdx).forEach((val, i) => {
-    // Check if it's an object (downsampled)
+  for (let i = 0; i < w; i++) {
+    const val = dataBuffer[i + drawIdx];
     if (typeof val === 'object' && val !== null) {
       const sx = i * viewTransform.scale + viewTransform.offsetX;
-      const yMin = VoltsToY(YtoVolts(h - (val.min / maxAdcVal * h))); // Convert to Y pixels
-      // Note: simplified Y calculation:
-      const yTop = h - (val.max / maxAdcVal * h) * viewTransform.scale + viewTransform.offsetY;
-      // Wait, simple logic:
-      // val -> Y pixel:
-      // yp_raw = h - (raw / maxAdcVal * h)
-      // yp_screen = yp_raw * scale + offsetY
-
       const rawYMin = h - (val.min / maxAdcVal * h);
       const rawYMax = h - (val.max / maxAdcVal * h);
 
@@ -570,7 +532,7 @@ function draw() {
       ctx.moveTo(sx, screenYMin);
       ctx.lineTo(sx, screenYMax);
     }
-  });
+  }
   ctx.stroke();
 
   // Pass 2: Draw Main Trace (Avg or raw value)
@@ -578,9 +540,10 @@ function draw() {
   ctx.strokeStyle = '#4ade80'; // Bright green
   ctx.beginPath();
 
-  dataBuffer.slice(drawIdx).forEach((val, i) => {
+  for (let i = 0; i < w; i++) {
+    const val = dataBuffer[i + drawIdx];
     const sx = i * viewTransform.scale + viewTransform.offsetX;
-    let rawVal;
+    /** @type {number} */ let rawVal;
 
     if (typeof val === 'object' && val !== null) {
       rawVal = val.avg;
@@ -593,7 +556,7 @@ function draw() {
 
     if (i === 0) ctx.moveTo(sx, sy);
     else ctx.lineTo(sx, sy);
-  });
+  }
 
   ctx.stroke();
 
@@ -614,15 +577,202 @@ function draw() {
   }
 }
 
+/**
+ * Loop the animation
+ */
+function animationLoop() {
+  if (!isFrozen) {
+    draw();
+  }
+  requestAnimationFrame(animationLoop);
+}
+
+
+/*
+ * ==========================================
+ * 6. User Interaction
+ * ==========================================
+ */
+
+/**
+ * Update background color of trigger level slider
+ */
+function triggerColor() {
+  activeConfig.trigger = parseInt(triggerLevel.value);
+  const value = (activeConfig.trigger - parseInt(triggerLevel.min)) / (parseInt(triggerLevel.max) - parseInt(triggerLevel.min)) * 100;
+  triggerLevel.style.background = triggerLevel.invert
+    ? `linear-gradient(to bottom, #00000070 0%, #ff020270  ${value}%, #1302ff70 ${value}%, #00000070 100%)`
+    : `linear-gradient(to bottom, #00000070 0%, #1302ff70 ${value}%, #ff020270  ${value}%, #00000070  100%)`
+}
+
+/**
+ * Update Mouse info
+ * @param {MouseEvent | {offsetX: number, offsetY: number, pageX: number, pageY: number}} event
+ */
+function updateInfo(event) {
+  // Use raw coordinates or event helpers
+  const voltage = YtoVolts(event.offsetY);
+  const timeOffset = XtoTime(event.offsetX);
+  let info = `<div>${voltage.toFixed(3)}V, ${timeOffset.toFixed(2)}ms</div>`;
+
+  // Store the last mouse position
+  lastMousePosition.x = event.offsetX;
+  lastMousePosition.y = event.offsetY;
+
+  // Update delta panel position and content if frozen
+  if (isFrozen && referencePosition) {
+    const deltaVoltage = Math.abs(referencePosition.v - voltage);
+    const deltaTime = Math.abs(referencePosition.t - timeOffset);
+
+    // avoid divide by zero
+    const freq = deltaTime > 0.00001 ? (1000 / deltaTime).toFixed(2) : '---';
+    info += `<div style='color: yellow'>ΔV ${deltaVoltage.toFixed(3)}V, ΔT ${deltaTime.toFixed(2)}ms (${freq} Hz)</div>`;
+  }
+
+  deltaPanel.style.left = `${event.pageX + 10}px`;
+  deltaPanel.style.top = `${event.pageY + 10}px`;
+  deltaPanel.innerHTML = info;
+
+  // Force redraw when frozen
+  if (isFrozen) {
+    draw();
+  }
+}
+
+// Trigger Level Events
+triggerLevel.addEventListener('input', triggerColor);
+triggerLevel.addEventListener('mousedown', function () {
+  this.downValue = this.value;
+});
+triggerLevel.addEventListener('mouseup', function () {
+  if (this.downValue == this.value) {
+    this.invert = !this.invert;
+    activeConfig.invert = this.invert;
+    triggerColor();
+    this.dispatchEvent(new Event("change"));
+  }
+  delete this.downValue;
+});
+
+// Canvas Interaction Events
+canvas.addEventListener('click', (event) => {
+  isFrozen = !isFrozen;
+  if (isFrozen) {
+    // Set reference position in World Coordinates
+    referencePosition = {
+      t: XtoTime(event.offsetX),
+      v: YtoVolts(event.offsetY)
+    };
+  }
+});
+
+canvas.addEventListener('mousemove', updateInfo);
+canvas.addEventListener('mouseenter', () => deltaPanel.style.display = 'block');
+canvas.addEventListener('mouseleave', () => deltaPanel.style.display = 'none');
+
+canvas.addEventListener('wheel', function (e) {
+  e.preventDefault();
+  const zoomFactor = 1.1;
+  const direction = e.deltaY < 0 ? 1 : -1;
+  const factor = direction > 0 ? zoomFactor : 1 / zoomFactor;
+
+  let newScale = viewTransform.scale * factor;
+
+  if (newScale < 1.001) {
+    // Snap to 100% and reset position
+    newScale = 1.0;
+    viewTransform.offsetX = 0;
+    viewTransform.offsetY = 0;
+  } else if (newScale > 50) {
+    return; // Max limit
+  } else {
+    // Zoom centered on mouse
+    const mx = e.offsetX;
+    const my = e.offsetY;
+
+    viewTransform.offsetX = mx - (mx - viewTransform.offsetX) * factor;
+    viewTransform.offsetY = my - (my - viewTransform.offsetY) * factor;
+  }
+
+  viewTransform.scale = newScale;
+  if (newScale < 1.001) {
+    statusEl.textContent = 'Connected via WebSocket';
+  } else {
+    statusEl.textContent = 'Scaled to ' + newScale.toFixed(2) + 'x';
+  }
+
+  draw();
+  if (isFrozen) {
+    updateInfo({ offsetX: e.offsetX, offsetY: e.offsetY, pageX: e.pageX, pageY: e.pageY });
+  }
+});
+
+
+/*
+ * ==========================================
+ * 7. Network & Configuration Management
+ * ==========================================
+ */
+
+/**
+ * Connect to WebSocket
+ */
+function connect() {
+  loadStoredConfig();
+
+  clearTimeout(reconnectTimeout);
+  if (reconnectBtn) reconnectBtn.style.display = 'none';
+
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/signal`;
+  // For local testing without ESP hardware, uncomment next line:
+  // const wsUrl = 'ws://localhost:8080/signal';
+
+  ws = new WebSocket(wsUrl);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => {
+    statusEl.textContent = 'Connected via WebSocket';
+    statusEl.style.color = '#4ade80';
+    if (ws.readyState === WebSocket.OPEN) ws.send("hello");
+  };
+
+  ws.onclose = () => {
+    scheduleReconnect();
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const arr = new Uint16Array(event.data);
+      if (arr?.length) {
+        processData(arr);
+      }
+    } catch (e) {
+      console.error('Parse error:', e);
+    }
+  };
+}
+
+/**
+ * Schedule a reconnect attempt
+ */
+function scheduleReconnect() {
+  statusEl.textContent = 'Disconnected. Retrying in 2s...';
+  statusEl.style.color = '#ef4444';
+  reconnectTimeout = window.setTimeout(connect, 2000); // Use window.setTimeout explicit
+}
+
+/**
+ * Send configuration to ESP32
+ */
 function setParams() {
-  const desiredRate = parseInt(document.getElementById('sampleRate').value);
+  const desiredRate = parseInt(sampleRateSelect.value);
   const hardwareRate = desiredRate < 1000 ? 1000 : desiredRate;
 
   const payload = {
     sample_rate: hardwareRate,
-    bit_width: parseInt(document.getElementById('bitWidth').value),
-    atten: parseInt(document.getElementById('atten').value),
-    test_hz: parseInt(document.getElementById('testHz').value)
+    bit_width: parseInt(bitWidthSelect.value),
+    atten: parseInt(attenSelect.value),
+    test_hz: parseInt(testHzSelect.value)
   };
 
   fetch('/params', {
@@ -637,7 +787,7 @@ function setParams() {
       lowRateState.accCount = 0;
 
       // Update active config
-      activeConfig = { ...payload, desiredRate, trigger: parseInt(triggerLevel.value) || 2048 };
+      activeConfig = { ...payload, desiredRate, trigger: parseInt(triggerLevel.value) || 2048, invert: triggerLevel.invert };
 
       // Save to localStorage
       localStorage.setItem('esp32_adc_config', JSON.stringify(activeConfig));
@@ -645,20 +795,22 @@ function setParams() {
       alert('Error updating configuration');
     }
   }).catch(err => alert('Network error: ' + err));
-};
+}
 
-// Load config from localStorage on startup
+/**
+ * Load configuration from LocalStorage
+ */
 function loadStoredConfig() {
   const stored = localStorage.getItem('esp32_adc_config');
   if (stored) {
     try {
       const cfg = JSON.parse(stored);
-      if (cfg.desiredRate) document.getElementById('sampleRate').value = cfg.desiredRate;
-      if (cfg.bit_width) document.getElementById('bitWidth').value = cfg.bit_width;
-      if (cfg.atten !== undefined) document.getElementById('atten').value = cfg.atten;
-      if (cfg.test_hz) document.getElementById('testHz').value = cfg.test_hz;
+      if (cfg.desiredRate) sampleRateSelect.value = cfg.desiredRate;
+      if (cfg.bit_width) bitWidthSelect.value = cfg.bit_width;
+      if (cfg.atten !== undefined) attenSelect.value = cfg.atten;
+      if (cfg.test_hz) testHzSelect.value = cfg.test_hz;
       if (cfg.invert) triggerLevel.invert = Boolean(cfg.invert);
-      if (cfg.trigger) triggerLevel.value = cfg.trigger;
+      if (cfg.trigger) triggerLevel.value = String(cfg.trigger);
       triggerColor();
       setParams();
     } catch (e) {
@@ -667,36 +819,37 @@ function loadStoredConfig() {
   }
 }
 
-document.getElementById('reconnectBtn').addEventListener('click', connect);
-document.querySelectorAll('#sampleRate, #bitWidth, #atten, #testHz').forEach(input => input.addEventListener('change', setParams));
+// Config Listeners
+if (reconnectBtn) reconnectBtn.addEventListener('click', connect);
+[sampleRateSelect, bitWidthSelect, attenSelect, testHzSelect].forEach(input => {
+  if (input) input.addEventListener('change', setParams)
+});
 triggerLevel.addEventListener('change', () => localStorage.setItem('esp32_adc_config', JSON.stringify(activeConfig)));
-document.getElementById('resetBtn').addEventListener('click', () => {
+if (resetBtn) resetBtn.addEventListener('click', () => {
   localStorage.clear();
   window.location.reload();
 });
-document.getElementById('powerOff').addEventListener('click', () => window.location.href = "/poweroff");
+if (powerOffBtn) powerOffBtn.addEventListener('click', () => window.location.href = "/poweroff");
 
+/**
+ * Setup WiFi modal listeners
+ */
 function setupWifiListeners() {
-  const modal = document.getElementById('wifiModal');
-  const btn = document.getElementById('wifiBtn');
-  const closeBtn = document.getElementById('closeWifi');
-  const saveBtn = document.getElementById('saveWifi');
-
-  if (btn) btn.onclick = () => {
-    modal.style.display = "flex";
-    document.getElementById('wifiSsid').focus();
+  if (wifiBtn) wifiBtn.onclick = () => {
+    wifiModal.style.display = "flex";
+    wifiSsidInput.focus();
   };
-  if (closeBtn) closeBtn.onclick = () => modal.style.display = "none";
-  if (saveBtn) saveBtn.onclick = () => {
-    const ssid = document.getElementById('wifiSsid').value;
-    const pass = document.getElementById('wifiPass').value;
+  if (closeWifiBtn) closeWifiBtn.onclick = () => wifiModal.style.display = "none";
+  if (saveWifiBtn) saveWifiBtn.onclick = () => {
+    const ssid = wifiSsidInput.value;
+    const pass = wifiPassInput.value;
 
     if (!ssid) {
       alert("SSID is required");
       return;
     }
 
-    saveBtn.innerText = "Saving...";
+    saveWifiBtn.innerText = "Saving...";
     fetch('/api/save_wifi', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -709,10 +862,31 @@ function setupWifiListeners() {
       })
       .catch(err => {
         alert("Error: " + err);
-        saveBtn.innerText = "Save";
+        saveWifiBtn.innerText = "Save";
       });
   };
 }
+
+
+/*
+ * ==========================================
+ * 8. Initialization
+ * ==========================================
+ */
+
+/**
+ * Resize canvas to fit container
+ */
+function resize() {
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+}
+
+window.addEventListener('resize', resize);
+
+// Startup sequence
+resize();
 setupWifiListeners();
-setParams();
+loadStoredConfig();
 connect();
+requestAnimationFrame(animationLoop);
