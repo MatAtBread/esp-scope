@@ -479,9 +479,6 @@ function draw() {
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  // Draw Background Grid
-  drawGrid(w, h);
-
   // Always draw the last waveform data
   ctx.beginPath();
   ctx.strokeStyle = '#4ade80';
@@ -502,7 +499,6 @@ function draw() {
         }
         drawIdx -= 1;
       }
-
     } else {
       while (drawIdx >= 0) {
         if (dataBuffer[drawIdx] > triggerVal && dataBuffer[drawIdx + 1] < triggerVal) {
@@ -540,6 +536,9 @@ function draw() {
   });
 
   ctx.stroke();
+
+  // Draw Background Grid
+  drawGrid(w, h);
 
   // Draw Crosshairs if mouse is over the canvas
   if (lastMousePosition.x !== null && lastMousePosition.y !== null) {
