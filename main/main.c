@@ -8,6 +8,8 @@
 #include "driver/gpio.h"
 #include "driver/ledc.h"
 #include "esp_adc/adc_continuous.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -35,9 +37,7 @@ static void start_webserver(void);
 
 // ADC Configuration
 #define ADC_UNIT ADC_UNIT_1
-#define ADC_UNIT ADC_UNIT_1
 #define ADC_CONV_MODE ADC_CONV_SINGLE_UNIT_1
-#define ADC_ATTEN ADC_ATTEN_DB_11
 #define ADC_BIT_WIDTH ADC_BITWIDTH_12
 
 #define ADC_OUTPUT_TYPE ADC_DIGI_OUTPUT_FORMAT_TYPE2
@@ -51,6 +51,7 @@ static bool is_ap = false;
 #define ADC_READ_LEN 4096
 
 static adc_continuous_handle_t adc_handle = NULL;
+static adc_cali_handle_t cali_handle = NULL;
 
 // Single client support for simplicity, or use a list for multiple
 static int s_ws_client_fd = -1;
@@ -81,6 +82,43 @@ static uint32_t get_optimal_buffer_size(uint32_t sample_rate) {
 }
 
 /*
+ * Initialize ADC calibration using chip-specific eFuse data
+ */
+static void init_adc_calibration(void) {
+  if (cali_handle != NULL) {
+    ESP_LOGW(TAG, "ADC calibration already initialized");
+    return;
+  }
+
+  adc_cali_curve_fitting_config_t cali_config = {
+      .unit_id = ADC_UNIT,
+      .atten = s_atten,
+      .bitwidth = s_bit_width,
+  };
+
+  esp_err_t ret = adc_cali_create_scheme_curve_fitting(&cali_config, &cali_handle);
+  if (ret == ESP_OK) {
+    ESP_LOGI(TAG, "ADC calibration initialized successfully (atten=%d, bitwidth=%d)",
+             s_atten, s_bit_width);
+  } else {
+    ESP_LOGW(TAG, "ADC calibration failed: %s - using raw values with fallback conversion",
+             esp_err_to_name(ret));
+    cali_handle = NULL;
+  }
+}
+
+/*
+ * Deinitialize ADC calibration
+ */
+static void deinit_adc_calibration(void) {
+  if (cali_handle != NULL) {
+    adc_cali_delete_scheme_curve_fitting(cali_handle);
+    cali_handle = NULL;
+    ESP_LOGI(TAG, "ADC calibration deinitialized");
+  }
+}
+
+/*
  * Task to read from ADC Continuous driver
  */
 static void adc_read_task(void* arg) {
@@ -97,9 +135,16 @@ static void adc_read_task(void* arg) {
                       &adc_handle);
   ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
 
+  // Initialize ADC calibration
+  init_adc_calibration();
+
   while (1) {
     if (s_reconfig_needed) {
       ESP_LOGI(TAG, "Reconfiguring ADC...");
+
+      // Deinitialize ADC calibration before reconfiguring
+      deinit_adc_calibration();
+
       if (adc_handle) {
         ESP_LOGI(TAG, "Stopping ADC...");
         ret = adc_continuous_stop(adc_handle);
@@ -126,6 +171,10 @@ static void adc_read_task(void* arg) {
 
       ESP_LOGI(TAG, "Starting ADC...");
       ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
+
+      // Reinitialize ADC calibration with new settings
+      init_adc_calibration();
+
       ESP_LOGI(TAG, "ADC Reconfigured and Restarted");
       s_reconfig_needed = false;
     }
@@ -150,8 +199,17 @@ static void adc_read_task(void* arg) {
 
         for (int i = 0; i < ret_num; i += sizeof(adc_digi_output_data_t)) {
           adc_digi_output_data_t* p = (adc_digi_output_data_t*)&result[i];
-          uint32_t val = ADC_GET_DATA(p);
-          out_buf[out_idx++] = (uint16_t)val;
+          uint32_t raw_val = ADC_GET_DATA(p);
+
+          // Convert raw ADC value to calibrated millivolts
+          int voltage_mv;
+          if (cali_handle) {
+            adc_cali_raw_to_voltage(cali_handle, (int)raw_val, &voltage_mv);
+          } else {
+            // Fallback to approximate conversion (3.3V reference / 4096 steps)
+            voltage_mv = (int)((raw_val * 3300) / 4096);
+          }
+          out_buf[out_idx++] = (uint16_t)voltage_mv;
         }
 
         if (out_idx > 0) {
