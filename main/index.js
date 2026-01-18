@@ -6,10 +6,10 @@
  * ==========================================
  */
 
-// Approximate full-scale voltages for ESP32C6/ESP32 ADC attenuations
-// 0dB: ~950mV, 2.5dB: ~1250mV, 6dB: ~1750mV, 11dB: ~3100mV+ (use 3.3V)
+// ADC now sends calibrated millivolts directly from firmware
+// Max voltage range depends on attenuation setting
 /** @type {number[]} */
-const ATTEN_TO_MAX_V = [0.95, 1.25, 1.75, 3.3];
+const ATTEN_TO_MAX_MV = [1000, 1300, 1900, 3300];
 
 // Data buffer size
 /** @type {number} */
@@ -49,7 +49,7 @@ let activeConfig = {
 
 /** @type {LowRateState} */
 let lowRateState = {
-  accMin: 4096,
+  accMin: 3300,
   accMax: 0,
   accSum: 0,
   accCount: 0,
@@ -155,11 +155,12 @@ function getTotalTimeMs() {
 }
 
 /**
- * Helper to get max voltage
- * @returns {number} Max voltage stored in ATTEN_TO_MAX_V or 3.3
+ * Helper to get max voltage in volts
+ * @returns {number} Max voltage in volts
  */
 function getMaxVoltage() {
-  return ATTEN_TO_MAX_V[activeConfig.atten] || 3.3;
+  // Firmware sends millivolts, convert to volts
+  return (ATTEN_TO_MAX_MV[activeConfig.atten] || 3100) / 1000;
 }
 
 /**
@@ -306,7 +307,7 @@ function processData(newData) {
         });
 
         // Reset Min/Max/Sum for next window
-        lowRateState.accMin = 4096;
+        lowRateState.accMin = 3300;
         lowRateState.accMax = 0;
         lowRateState.accSum = 0;
         lowRateState.accCount = 0;
@@ -472,14 +473,18 @@ function draw() {
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  const maxAdcVal = 4096; // 12-bit fixed scale
+  // Use the actual max millivolts for current attenuation (not 3300)
+  const maxAdcVal = ATTEN_TO_MAX_MV[activeConfig.atten] || 3100;
 
   // Trigger values
   let drawIdx = dataBuffer.length - w;
   if (drawIdx < 0)
     drawIdx = 0;
   else {
-    const triggerVal = (4096 - (parseInt(triggerLevel.value) || 2048));
+    // Convert trigger level from slider (0-4095) to millivolts (0-maxAdcVal)
+    // Slider is inverted: 0 = top (max mV), 4095 = bottom (0mV)
+    const sliderVal = parseInt(triggerLevel.value) || 2048;
+    const triggerVal = Math.round((1 - sliderVal / 4095) * maxAdcVal);
 
     // Helper to extract value for trigger (handles numbers and avg objects)
     const getVal = (i) => {
@@ -505,7 +510,7 @@ function draw() {
       }
     }
 
-    const triggerVolts = ((maxAdcVal - activeConfig.trigger) * getMaxVoltage() / maxAdcVal).toFixed(2) + "V";
+    const triggerVolts = (triggerVal / 1000).toFixed(2) + "V";
     const triggerDir = triggerLevel.invert ? '&#x1F809;' : '&#x1F80B;';
     if (drawIdx < 0) {
       drawIdx = dataBuffer.length - w;
@@ -781,7 +786,7 @@ function setParams() {
     body: JSON.stringify(payload)
   }).then(res => {
     if (res.ok) {
-      lowRateState.accMin = 4096;
+      lowRateState.accMin = 3300;
       lowRateState.accMax = 0;
       lowRateState.accSum = 0;
       lowRateState.accCount = 0;
