@@ -3,319 +3,525 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>espScope</title>
     <style>
-        * {
-            box-sizing: border-box;
+        :root {
+            --bg: #111315;
+            --panel: #1c1f23;
+            --panel2: #24282d;
+            --line: #33383f;
+            --text: #e4e6e8;
+            --muted: #9aa1a9;
+            --ch1: #f5d90a;
+            --ch2: #22d3ee;
+            --ref: #e879f9;
+            --trig: #ff8a3d;
+            --ok: #4ade80;
+            --bad: #ef4444;
+            --accent: #38bdf8;
         }
+
+        * { box-sizing: border-box; }
+
+        html, body { margin: 0; height: 100%; }
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background: #1a1a1a;
-            color: #e0e0e0;
-            margin: 0;
-            padding: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        .app {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            grid-template-rows: auto 1fr auto;
+            grid-template-areas: "top top" "screen side" "meas side";
             height: 100vh;
-            /* Fallback */
             height: 100dvh;
-            /* Mobile viewport fix */
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
         }
 
-        .container {
+        /* ---------- Top bar ---------- */
+        .topbar {
+            grid-area: top;
             display: flex;
-            flex-direction: column;
-            height: 100%;
-            width: 100%;
-            max-width: 100%;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+            flex-wrap: wrap;
         }
 
-        /* Top Section: Chart (Fills available space) */
-        .chart-section {
-            flex-grow: 1;
+        .brand { font-weight: 700; letter-spacing: .5px; margin-right: 6px; }
+        .brand span { color: var(--ch1); }
+
+        .pill {
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 12px;
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: var(--panel2);
+            border: 1px solid var(--line);
+            white-space: nowrap;
+        }
+
+        .pill.ok { color: var(--ok); border-color: #2a5c3c; }
+        .pill.bad { color: var(--bad); border-color: #6b2a2a; }
+        .pill.warn { color: var(--trig); border-color: #6b4a2a; }
+
+        .spacer { flex: 1; }
+
+        button {
+            background: var(--panel2);
+            color: var(--text);
+            border: 1px solid var(--line);
+            padding: 7px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            white-space: nowrap;
+            font-size: 13px;
+            touch-action: manipulation;
+        }
+
+        button:hover { border-color: #59616b; }
+        button.run { background: #14532d; border-color: #1f7a43; color: #bbf7d0; min-width: 72px; }
+        button.stop { background: #7f1d1d; border-color: #a33; color: #fecaca; min-width: 72px; }
+        button.primary { background: #0c4a6e; border-color: #1479b0; color: #e0f2fe; }
+        button.on { background: #3b3410; border-color: var(--ch1); color: var(--ch1); }
+        button.small { padding: 4px 9px; font-size: 13px; }
+
+        /* ---------- Screen ---------- */
+        .screen {
+            grid-area: screen;
             position: relative;
             background: #000;
             min-height: 0;
-            /* Important for flex child with specific height content */
-            display: flex;
-        }
-
-        .canvas-container {
-            flex-grow: 1;
-            position: relative;
-            height: 100%;
-            width: 100%;
-            border: 8px solid #333;
+            border-right: 1px solid var(--line);
         }
 
         canvas {
+            position: absolute;
+            inset: 0;
             width: 100%;
             height: 100%;
             display: block;
+            touch-action: none;
+            cursor: crosshair;
         }
 
-        /* Trigger Slider floating on right */
-        #triggerLevel {
+        #readout {
             position: absolute;
-            right: 0;
-            top: 0;
-            bottom: 0;
-            height: 100%;
-            width: 4px;
-            margin: 0;
-            z-index: 10;
-            -webkit-appearance: none;
-            border: 1px solid #333;
-            /* Reset to control gradient */
-            appearance: none;
-            writing-mode: vertical-lr;
-        }
-
-        /* Status Text Overlay */
-        .status-overlay {
-            position: absolute;
-            top: 10px;
-            right: 20px;
-            pointer-events: none;
-            text-shadow: 1px 1px 2px black;
-        }
-
-        .status {
-            font-family: monospace;
-            color: #ccc;
-        }
-
-        #reconnectBtn {
-            pointer-events: auto;
-            margin-top: 5px;
-        }
-
-        /* Bottom Section: Controls */
-        .controls-section {
-            background: #2d2d2d;
-            padding: 10px;
-            padding-bottom: calc(10px + env(safe-area-inset-bottom));
-            /* iOS Home Bar fix */
-            border-top: 1px solid #444;
-            flex-shrink: 0;
-            z-index: 20;
-        }
-
-        .controls {
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            /* gap: 15px; */
-            justify-content: space-around;
-            flex-wrap: nowrap;
-            overflow-x: auto;
-        }
-
-        .control-group {
-            display: flex;
-            flex-direction: row;
-            align-items: center;
-            gap: 5px;
-            white-space: nowrap;
-            margin-right: 15px;
-        }
-
-        label {
-            font-size: 0.85em;
-            color: #bbb;
-            margin-right: 4px;
-        }
-
-        input,
-        select {
-            background: #3d3d3d;
-            border: 1px solid #555;
-            color: white;
-            border-radius: 4px;
-            padding: 6px;
-            font-size: 0.9em;
-            width: 5em;
-        }
-
-        select {
-            width: auto;
-        }
-
-        /* Buttons Group */
-        .btn-group {
-            display: flex;
-            gap: 8px;
-            margin-left: auto;
-        }
-
-        button {
-            background: #4ade80;
-            color: #1a1a1a;
-            border: none;
-            padding: 8px 12px;
-            border-radius: 4px;
-            font-weight: bold;
-            cursor: pointer;
-            white-space: nowrap;
-            font-size: 0.9em;
-        }
-
-        button:hover {
-            background: #22c55e;
-        }
-
-        button.secondary {
-            background: #444;
-            color: #ccc;
-        }
-
-        #deltaPanel {
-            position: absolute;
-            background: rgba(45, 45, 45, 0.9);
-            color: #e0e0e0;
-            padding: 5px 10px;
-            border-radius: 4px;
+            left: 10px;
+            bottom: 10px;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 12px;
+            background: rgba(20, 22, 25, .85);
+            border: 1px solid var(--line);
+            border-radius: 6px;
+            padding: 4px 8px;
             pointer-events: none;
             display: none;
-            z-index: 50;
         }
 
-        /* Modal Styles */
+        #readout .ref { color: var(--ref); }
+
+        /* ---------- Measurements ---------- */
+        .meas {
+            grid-area: meas;
+            background: var(--panel);
+            border-top: 1px solid var(--line);
+            border-right: 1px solid var(--line);
+            padding: 6px 8px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+            gap: 4px;
+        }
+
+        .m {
+            background: var(--panel2);
+            border-radius: 5px;
+            padding: 3px 7px;
+            line-height: 1.25;
+        }
+
+        .m .k { font-size: 11px; color: var(--muted); }
+        .m .v {
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 14px;
+            color: var(--ch1);
+            white-space: nowrap;
+        }
+
+        /* Second value (CH2) and inter-channel cells only in 2-channel mode */
+        .m .v2 { color: var(--ch2); display: none; }
+        .m .vp { color: var(--ref); }
+        .meas .m.dual { display: none; }
+        .meas.two .m .v2 { display: block; }
+        .meas.two .m.dual { display: block; }
+        .seg.chsel button.c1.sel { color: var(--ch1); }
+        .seg.chsel button.c2.sel { color: var(--ch2); }
+
+        /* ---------- Side panel ---------- */
+        .side {
+            grid-area: side;
+            background: var(--panel);
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        details {
+            background: var(--panel2);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+
+        summary {
+            cursor: pointer;
+            padding: 8px 10px;
+            font-weight: 700;
+            font-size: 13px;
+            letter-spacing: .4px;
+            text-transform: uppercase;
+            color: var(--muted);
+            list-style: none;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        summary::-webkit-details-marker { display: none; }
+        summary .sv { color: var(--text); text-transform: none; font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: 0; }
+        details[open] summary { border-bottom: 1px solid var(--line); }
+
+        .body { padding: 8px 10px; display: grid; gap: 8px; }
+
+        .row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            justify-content: space-between;
+        }
+
+        .row > label { color: var(--muted); font-size: 12px; flex-shrink: 0; }
+
+        .stepper { display: flex; align-items: center; gap: 4px; }
+        .stepper .val {
+            min-width: 86px;
+            text-align: center;
+            font-family: ui-monospace, Menlo, Consolas, monospace;
+            font-size: 14px;
+            color: var(--text);
+        }
+
+        .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+        .seg button { border: none; border-radius: 0; padding: 5px 9px; background: transparent; color: var(--muted); }
+        .seg button + button { border-left: 1px solid var(--line); }
+        .seg button.sel { background: #3a3f46; color: var(--text); }
+
+        input, select {
+            background: #15181b;
+            border: 1px solid var(--line);
+            color: var(--text);
+            border-radius: 5px;
+            padding: 5px 6px;
+            font-size: 13px;
+            width: 92px;
+        }
+
+        select { width: auto; }
+        input[type=range] { width: 100%; padding: 0; accent-color: var(--trig); }
+        input[type=checkbox] { width: auto; }
+
+        .hint { font-size: 11px; color: var(--muted); line-height: 1.35; }
+        .hint b { color: var(--text); }
+
+        /* ---------- Modal ---------- */
         .modal {
             display: none;
             position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.8);
+            inset: 0;
+            background: rgba(0, 0, 0, 0.75);
             z-index: 1000;
             align-items: center;
             justify-content: center;
         }
 
         .modal-content {
-            background: #2d2d2d;
+            background: var(--panel);
+            border: 1px solid var(--line);
             padding: 20px;
-            border-radius: 8px;
-            width: 300px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
+            border-radius: 10px;
+            width: min(320px, 92vw);
         }
 
-        .modal-header {
-            font-size: 1.2em;
-            margin-bottom: 15px;
-            color: #4ade80;
-        }
+        .modal-header { font-size: 1.1em; margin-bottom: 15px; color: var(--ch1); font-weight: 700; }
+        .form-group { margin-bottom: 12px; }
+        .form-group label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 12px; }
+        .form-group input { width: 100%; }
+        .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        .form-group label {
-            width: 100%;
-            display: block;
-            margin-bottom: 5px;
-        }
-
-        .form-group input {
-            width: 100%;
-        }
-
-        .modal-actions {
-            display: flex;
-            justify-content: flex-end;
-            gap: 10px;
+        /* ---------- Narrow screens ---------- */
+        @media (max-width: 860px) {
+            .app {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto 52vh auto auto;
+                grid-template-areas: "top" "screen" "meas" "side";
+                height: auto;
+            }
+            .screen { border-right: none; }
+            .side { overflow: visible; }
+            .meas { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
         }
     </style>
 </head>
 
 <body>
-    <div class="container">
-        <!-- Top Section: Chart -->
-        <div class="chart-section">
-            <div class="canvas-container">
-                <canvas id="adcChart"></canvas>
-            </div>
-
-            <!-- Floating Trigger Slider -->
-            <input type="range" id="triggerLevel" orient="vertical" min="-1" max="4097" value="2048">
-
-            <!-- Overlay Status -->
-            <div class="status-overlay">
-                <div class="status" id="trigger-status"></div>
-                <div class="status" id="status">Connecting...</div>
-                <button id="reconnectBtn"
-                    style="display:none; background:#eab308; color:#000; padding:4px 8px; font-size:0.8rem;">Reconnect</button>
-                <div class="info" id="info"></div>
-            </div>
-
-            <!-- Mouseover Info Tooltip -->
-            <div id="deltaPanel"></div>
+    <div class="app">
+        <!-- Top bar -->
+        <div class="topbar">
+            <div class="brand">esp<span>Scope</span></div>
+            <button id="runBtn" class="run" title="Run / Stop (Space)">RUN</button>
+            <button id="singleBtn" title="Single capture (S)">SINGLE</button>
+            <button id="autoBtn" class="primary" title="Automatic setup (A)">AUTO SET</button>
+            <span id="trigStatus" class="pill">--</span>
+            <span class="spacer"></span>
+            <span id="rateStatus" class="pill">Fs --</span>
+            <span id="connStatus" class="pill bad">Connecting…</span>
         </div>
 
-        <!-- Bottom Section: Controls -->
-        <div class="controls-section">
-            <div class="controls">
+        <!-- Screen -->
+        <div class="screen" id="screen">
+            <canvas id="scope"></canvas>
+            <div id="readout"></div>
+        </div>
 
-                <div class="control-group">
-                    <label>Rate(Hz)</label>
-                    <input type="number" id="sampleRate" value="10000" min="1" max="83333">
-                </div>
+        <!-- Measurements -->
+        <div class="meas" id="meas"></div>
 
-                <div class="control-group" style="display: none;">
-                    <label>BitWidth</label>
-                    <select id="bitWidth">
-                        <option value="12" selected>12</option>
-                        <option value="11">11</option>
-                        <option value="10">10</option>
-                        <option value="9">9</option>
-                    </select>
+        <!-- Controls -->
+        <div class="side">
+            <details open>
+                <summary>Vertical <span class="sv" id="sumV"></span></summary>
+                <div class="body">
+                    <div class="row">
+                        <label>Channels</label>
+                        <div class="seg" id="channelsSel">
+                            <button data-v="1">1 channel</button>
+                            <button data-v="2">2 channels</button>
+                        </div>
+                    </div>
+                    <div class="row" id="chSelRow">
+                        <label>Adjust</label>
+                        <div class="seg chsel" id="chSel">
+                            <button data-v="0" class="c1">CH1</button>
+                            <button data-v="1" class="c2">CH2</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Volts/div</label>
+                        <div class="stepper">
+                            <button class="small" id="vdivDown" title="More sensitivity">−</button>
+                            <span class="val" id="vdivVal"></span>
+                            <button class="small" id="vdivUp" title="Less sensitivity">+</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Position</label>
+                        <div class="stepper">
+                            <button class="small" id="vposDown" title="Move trace down">▼</button>
+                            <span class="val" id="vposVal"></span>
+                            <button class="small" id="vposUp" title="Move trace up">▲</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label></label>
+                        <button class="small" id="vposZero">Center 0 V</button>
+                        <button class="small" id="vposMid">Center signal</button>
+                    </div>
+                    <div class="row">
+                        <label>Coupling</label>
+                        <div class="seg" id="coupling">
+                            <button data-v="dc">DC</button>
+                            <button data-v="ac">AC</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Probe / divider</label>
+                        <div class="stepper">
+                            <select id="probe">
+                                <option value="1">x1</option>
+                                <option value="2">x2</option>
+                                <option value="5">x5</option>
+                                <option value="10">x10</option>
+                                <option value="custom">other…</option>
+                            </select>
+                            <input type="number" id="probeCustom" step="0.01" min="0.01" style="width:70px; display:none">
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>ADC range</label>
+                        <select id="atten">
+                            <option value="0">0–0.95 V (0 dB)</option>
+                            <option value="1">0–1.25 V (2.5 dB)</option>
+                            <option value="2">0–1.75 V (6 dB)</option>
+                            <option value="3">0–3.1 V (12 dB)</option>
+                        </select>
+                    </div>
                 </div>
+            </details>
 
-                <div class="control-group">
-                    <label>Atten</label>
-                    <select id="atten">
-                        <option value="0">0dB</option>
-                        <option value="1">2.5dB</option>
-                        <option value="2">6dB</option>
-                        <option value="3" selected>11dB</option>
-                    </select>
+            <details open>
+                <summary>Horizontal <span class="sv" id="sumH"></span></summary>
+                <div class="body">
+                    <div class="row">
+                        <label>Time/div</label>
+                        <div class="stepper">
+                            <button class="small" id="tdivDown" title="Faster">−</button>
+                            <span class="val" id="tdivVal"></span>
+                            <button class="small" id="tdivUp" title="Slower">+</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Trigger position</label>
+                        <div class="stepper">
+                            <button class="small" id="hposLeft">◀</button>
+                            <span class="val" id="hposVal"></span>
+                            <button class="small" id="hposRight">▶</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Sampling</label>
+                        <div class="stepper">
+                            <select id="rateMode">
+                                <option value="auto">Auto</option>
+                                <option value="manual">Manual</option>
+                            </select>
+                            <input type="number" id="rateManual" min="1000" max="83333" step="1" style="display:none">
+                        </div>
+                    </div>
+                    <div class="hint" id="rateHint"></div>
                 </div>
+            </details>
 
-                <div class="control-group">
-                    <label>TestHz</label>
-                    <input type="number" id="testHz" value="100" min="1" max="10000">
+            <details open>
+                <summary>Trigger <span class="sv" id="sumT"></span></summary>
+                <div class="body">
+                    <div class="row">
+                        <label>Mode</label>
+                        <div class="seg" id="trigMode">
+                            <button data-v="auto">Auto</button>
+                            <button data-v="normal">Normal</button>
+                            <button data-v="none">Free</button>
+                        </div>
+                    </div>
+                    <div class="row" id="trigSrcRow">
+                        <label>Source</label>
+                        <div class="seg chsel" id="trigSrc">
+                            <button data-v="0" class="c1">CH1</button>
+                            <button data-v="1" class="c2">CH2</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Edge</label>
+                        <div class="seg" id="trigEdge">
+                            <button data-v="rise">↑ Rising</button>
+                            <button data-v="fall">↓ Falling</button>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label>Level</label>
+                        <div class="stepper">
+                            <input type="number" id="trigLevel" step="0.01">
+                            <span class="hint">V</span>
+                            <button class="small" id="trig50" title="Level at 50 % of the signal">50%</button>
+                        </div>
+                    </div>
+                    <div class="hint">Drag the orange arrow on the right to move the level.</div>
                 </div>
+            </details>
 
-                <div class="btn-group">
-                    <button title="Reset to default rate, attenuation & test settings" id="resetBtn"
-                        class="secondary">&olarr;</button>
-                    <button title="Change wifi access point" id="wifiBtn" class="secondary">&#128732;</button>
-                    <button title="Power off the esp-scope" id="powerOff" class="secondary">&#9889;</button>
+            <details>
+                <summary>Display &amp; analysis</summary>
+                <div class="body">
+                    <div class="row">
+                        <label>FFT (spectrum)</label>
+                        <button class="small" id="fftBtn">Off</button>
+                    </div>
+                    <div class="row">
+                        <label>Averaging</label>
+                        <select id="avg">
+                            <option value="1">Off</option>
+                            <option value="2">2</option>
+                            <option value="4">4</option>
+                            <option value="8">8</option>
+                            <option value="16">16</option>
+                        </select>
+                    </div>
+                    <div class="row">
+                        <label>Sample dots</label>
+                        <input type="checkbox" id="dots">
+                    </div>
+                    <div class="hint">
+                        <b>Wheel</b>: time/div · <b>Shift+wheel</b>: volts/div<br>
+                        <b>Drag</b> vertically: position · horizontally: trigger point<br>
+                        <b>Click</b>: set a reference cursor (ΔT, ΔV, 1/ΔT) · click again to clear<br>
+                        <b>Drag</b> the 1/2 marker on the left: moves that channel<br>
+                        Keys: <b>Space</b> run/stop · <b>A</b> autoset · <b>S</b> single · <b>1</b>/<b>2</b> channel to adjust
+                    </div>
                 </div>
-            </div>
+            </details>
+
+            <details>
+                <summary>Test signal &amp; calibration</summary>
+                <div class="body">
+                    <div class="row">
+                        <label>Test signal (Hz)</label>
+                        <input type="number" id="testHz" value="1000" min="1" max="40000">
+                    </div>
+                    <div class="hint" id="pinInfo">CH1: GPIO1 · CH2: GPIO2 · Test signal: GPIO21</div>
+                    <div class="row">
+                        <label>Time correction</label>
+                        <span class="val" id="timeCalVal">1.0000</span>
+                    </div>
+                    <div class="row">
+                        <button class="small" id="timeCalBtn" title="Connect the test signal to the input and press">Calibrate with test signal</button>
+                        <button class="small" id="timeCalReset">Clear</button>
+                    </div>
+                </div>
+            </details>
+
+            <details>
+                <summary>System</summary>
+                <div class="body">
+                    <div class="row">
+                        <button id="wifiBtn">Wi‑Fi</button>
+                        <button id="resetBtn" title="Restore default settings">Reset</button>
+                        <button id="powerOff" title="Power off the esp-scope">Power off</button>
+                    </div>
+                    <div class="hint" id="devInfo"></div>
+                </div>
+            </details>
         </div>
     </div>
 
     <!-- Wifi Modal -->
     <div id="wifiModal" class="modal">
         <div class="modal-content">
-            <div class="modal-header">Configure Wi-Fi</div>
+            <div class="modal-header">Configure Wi‑Fi</div>
             <div class="form-group">
                 <label>SSID</label>
-                <input type="text" id="wifiSsid" placeholder="Network Name">
+                <input type="text" id="wifiSsid" placeholder="Network name">
             </div>
             <div class="form-group">
                 <label>Password</label>
                 <input type="password" id="wifiPass" placeholder="Password">
             </div>
             <div class="modal-actions">
-                <button id="closeWifi" style="background:#555; color:#fff;">Cancel</button>
-                <button id="saveWifi">Save</button>
+                <button id="closeWifi">Cancel</button>
+                <button id="saveWifi" class="primary">Save</button>
             </div>
         </div>
     </div>

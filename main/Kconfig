@@ -1,19 +1,54 @@
 menu "espScope Configuration"
+    config SCOPE_ADC_CHANNEL
+        int "ADC1 channel used as scope input"
+        range 0 9
+        default 0
+        help
+            ADC1 channel sampled by the scope. The GPIO depends on the chip:
+            ESP32-S3: channel N is GPIO N+1 (channel 0 = GPIO1).
+            ESP32-C6: channel N is GPIO N (channel 0 = GPIO0).
+
+    config SCOPE_ADC_CHANNEL2
+        int "ADC1 channel used as scope input CH2"
+        range 0 9
+        default 1
+        help
+            Second scope input, used in 2-channel mode (the ADC alternates between
+            CH1 and CH2, so each gets half the sample rate).
+            ESP32-S3: channel 1 = GPIO2. ESP32-C6: channel 1 = GPIO1.
+
+    config SCOPE_TEST_GPIO
+        int "Test signal output GPIO"
+        default 21 if IDF_TARGET_ESP32S3
+        default 1
+        help
+            GPIO that outputs the square-wave test signal. It must not be the same
+            pin as the ADC input. Default for ESP32-S3 is GPIO21.
+
     config LED_BUILTIN
-        int "LED IO Pin"
+        int "LED IO Pin (-1 = none)"
+        default -1 if IDF_TARGET_ESP32S3
         default 15
         help
-            LED IO pin
+            LED IO pin. Use -1 if the board has no plain LED (ESP32-S3 DevKits
+            have an addressable RGB LED that this firmware does not drive).
 
     config BSP_CONFIG_GPIO
         int "Factory Reset Pin (GPIO)"
+        default 0 if IDF_TARGET_ESP32S3
         default 9
         help
             GPIO pin number to hold low on boot to erase NVS (Factory Reset).
-            Default is 9 (BOOT button on Seeed XIAO ESP32C6).
+            Default is the BOOT button (GPIO0 on ESP32-S3, GPIO9 on Seeed XIAO ESP32C6).
+
+    config BOARD_HAS_SPECIFIC_INIT
+        bool "Include a board specific initialisation file"
+        default n
 
     config BOARD_SPECIFIC_INIT
         string "Name of file containing any board specfic initialisation"
+        depends on BOARD_HAS_SPECIFIC_INIT
+        default "./boards/xiao_esp32c6.h"
         help
             If your board requires some specific initialization C code, place it in
             a file called "./boards/<your board name>.h" and set this to "./boards/your board name.h"

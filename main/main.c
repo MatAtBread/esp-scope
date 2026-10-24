@@ -7,6 +7,8 @@
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 #include "esp_adc/adc_continuous.h"
 #include "esp_event.h"
 #include "esp_http_server.h"
@@ -35,10 +37,11 @@ static void start_webserver(void);
 
 // ADC Configuration
 #define ADC_UNIT ADC_UNIT_1
-#define ADC_UNIT ADC_UNIT_1
 #define ADC_CONV_MODE ADC_CONV_SINGLE_UNIT_1
-#define ADC_ATTEN ADC_ATTEN_DB_11
 #define ADC_BIT_WIDTH ADC_BITWIDTH_12
+#define SCOPE_CHANNEL ((adc_channel_t)CONFIG_SCOPE_ADC_CHANNEL)
+#define SCOPE_CHANNEL2 ((adc_channel_t)CONFIG_SCOPE_ADC_CHANNEL2)
+#define TEST_GPIO CONFIG_SCOPE_TEST_GPIO
 
 #define ADC_OUTPUT_TYPE ADC_DIGI_OUTPUT_FORMAT_TYPE2
 #define ADC_GET_DATA(p_data) ((p_data)->type2.data)
@@ -61,6 +64,7 @@ static uint32_t s_sample_rate = 10000;
 static adc_atten_t s_atten = ADC_ATTEN_DB_12;
 static adc_bitwidth_t s_bit_width = ADC_BIT_WIDTH;
 static uint16_t s_test_hz = 100;
+static uint8_t s_channels = 1;  // 1 = CH1 only, 2 = CH1 + CH2 interleaved
 
 // Forward declarations
 static void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num,
@@ -89,12 +93,9 @@ static void adc_read_task(void* arg) {
   uint8_t result[ADC_READ_LEN] = {0};
   memset(result, 0xcc, ADC_READ_LEN);
 
-  // ADC Init (Moved from app_main)
-  // TODO: Make this configurable or find a good default pin.
-  // For ESP32C6 ADC1 Channel 0 is usually GPIO 0. Let's use Channel 0 for now.
-  adc_channel_t channel[1] = {ADC_CHANNEL_0};
-  continuous_adc_init(channel, sizeof(channel) / sizeof(adc_channel_t),
-                      &adc_handle);
+  // ADC Init (Moved from app_main). Channels are set in menuconfig (espScope).
+  adc_channel_t channel[2] = {SCOPE_CHANNEL, SCOPE_CHANNEL2};
+  continuous_adc_init(channel, s_channels, &adc_handle);
   ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
 
   while (1) {
@@ -121,8 +122,7 @@ static void adc_read_task(void* arg) {
       // Update global defaults for next init
       // Note: In a robust app, we should pass these to init function
       // For now, we rely on the global s_sample_rate etc being read by init
-      adc_channel_t channel[1] = {ADC_CHANNEL_0};
-      continuous_adc_init(channel, 1, &adc_handle);
+      continuous_adc_init(channel, s_channels, &adc_handle);
 
       ESP_LOGI(TAG, "Starting ADC...");
       ESP_ERROR_CHECK(adc_continuous_start(adc_handle));
@@ -148,9 +148,12 @@ static void adc_read_task(void* arg) {
         uint16_t out_buf[ADC_READ_LEN / sizeof(adc_digi_output_data_t)];
         int out_idx = 0;
 
+        // Each sample: bits 0-11 = ADC code, bits 12-15 = scope channel (0 = CH1, 1 = CH2)
+        bool dual = s_channels == 2;
         for (int i = 0; i < ret_num; i += sizeof(adc_digi_output_data_t)) {
           adc_digi_output_data_t* p = (adc_digi_output_data_t*)&result[i];
-          uint32_t val = ADC_GET_DATA(p);
+          uint32_t val = ADC_GET_DATA(p) & 0xfff;
+          if (dual && p->type2.channel == SCOPE_CHANNEL2) val |= 1 << 12;
           out_buf[out_idx++] = (uint16_t)val;
         }
 
@@ -213,7 +216,7 @@ static void continuous_adc_init(adc_channel_t* channel, uint8_t channel_num,
 
   for (int i = 0; i < channel_num; i++) {
     adc_pattern[i].atten = s_atten;
-    adc_pattern[i].channel = channel[i] & 0x7;
+    adc_pattern[i].channel = channel[i];
     adc_pattern[i].unit = ADC_UNIT;
     adc_pattern[i].bit_width = s_bit_width;
 
@@ -229,7 +232,7 @@ static bool ledc_inited = false;
 static void start_test_signal(uint32_t hz) {
   if (ledc_inited) {
     ESP_LOGI(TAG, "De-init test signal");
-    gpio_reset_pin(GPIO_NUM_1);
+    gpio_reset_pin(TEST_GPIO);
 
     // Stop the PWM signal on channel 0
     ledc_stop(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, 0);
@@ -240,19 +243,23 @@ static void start_test_signal(uint32_t hz) {
     // (Optional) Uninstall fade functionality if used
     ledc_fade_func_uninstall();
   }
-  ESP_LOGI(TAG, "Starting test signal at %u Hz", hz);
+  ESP_LOGI(TAG, "Starting test signal at %" PRIu32 " Hz on GPIO %d", hz, TEST_GPIO);
+  // Highest duty resolution the 80MHz clock allows at this frequency (so >4.8kHz works too)
+  uint32_t res = ledc_find_suitable_duty_resolution(80000000, hz);
+  if (res > LEDC_TIMER_14_BIT) res = LEDC_TIMER_14_BIT;
+  if (res < 1) res = 1;
   ledc_timer_config_t ledc_timer = {
       .speed_mode = LEDC_LOW_SPEED_MODE,
-      .duty_resolution = LEDC_TIMER_14_BIT,
+      .duty_resolution = (ledc_timer_bit_t)res,
       .timer_num = LEDC_TIMER_0,
       .freq_hz = hz,
       .clk_cfg = LEDC_AUTO_CLK};
   ledc_channel_config_t ledc_channel = {
-      .gpio_num = 1,  // GPIO data pin 1
+      .gpio_num = TEST_GPIO,
       .speed_mode = LEDC_LOW_SPEED_MODE,
       .channel = LEDC_CHANNEL_0,
       .timer_sel = LEDC_TIMER_0,
-      .duty = 1 << (ledc_timer.duty_resolution - 1),  // 512, // 50% duty cycle (1024 / 2 for 10-bit resolution)
+      .duty = 1 << (ledc_timer.duty_resolution - 1),  // 50% duty cycle
       .hpoint = 0};
 
   // Initialize the PWM
@@ -265,7 +272,7 @@ static void start_test_signal(uint32_t hz) {
 }
 
 static void show_status_led() {
-  #ifdef CONFIG_BSP_CONFIG_GPIO
+  #if defined(CONFIG_BSP_CONFIG_GPIO) && CONFIG_BSP_CONFIG_GPIO >= 0
   gpio_config_t rst_conf = {
       .pin_bit_mask = (1ULL << CONFIG_BSP_CONFIG_GPIO),
       .mode = GPIO_MODE_INPUT,
@@ -279,7 +286,7 @@ static void show_status_led() {
   int64_t reset_pressed_time = 0;
   while (true) {
     int64_t now = esp_timer_get_time() / 1000;
-#ifdef CONFIG_LED_BUILTIN
+#if defined(CONFIG_LED_BUILTIN) && CONFIG_LED_BUILTIN >= 0
     if (is_ap) {
       vTaskDelay(pdMS_TO_TICKS(500));
       gpio_set_level(CONFIG_LED_BUILTIN, 1);
@@ -297,7 +304,7 @@ static void show_status_led() {
 #endif
 
 // Check Reset Pin
-#ifdef CONFIG_BSP_CONFIG_GPIO
+#if defined(CONFIG_BSP_CONFIG_GPIO) && CONFIG_BSP_CONFIG_GPIO >= 0
     if (!is_ap && gpio_get_level(CONFIG_BSP_CONFIG_GPIO) == 0) {
       if (now - reset_pressed_time > 1000) {
         ESP_LOGW(TAG, "Reset to WiFi-AP mode triggered via GPIO %d", CONFIG_BSP_CONFIG_GPIO);
@@ -323,7 +330,7 @@ void app_main(void) {
   }
   ESP_ERROR_CHECK(ret);
 
-#ifdef CONFIG_LED_BUILTIN
+#if defined(CONFIG_LED_BUILTIN) && CONFIG_LED_BUILTIN >= 0
   gpio_config_t led_io_conf = {
       .pin_bit_mask = (1ULL << CONFIG_LED_BUILTIN),
       .mode = GPIO_MODE_OUTPUT,
@@ -334,7 +341,7 @@ void app_main(void) {
   gpio_set_level(CONFIG_LED_BUILTIN, 0);
 #endif
 
-#ifdef CONFIG_BOARD_SPECIFIC_INIT
+#ifdef CONFIG_BOARD_HAS_SPECIFIC_INIT
 #include CONFIG_BOARD_SPECIFIC_INIT
 #endif
 
@@ -414,12 +421,18 @@ static esp_err_t params_handler(httpd_req_t* req) {
   cJSON* root = cJSON_Parse(buf);
   if (root) {
     cJSON* sample_rate = cJSON_GetObjectItem(root, "sample_rate");
-    if (sample_rate && s_sample_rate != sample_rate->valueint) {
-      s_reconfig_needed = true;
-      s_sample_rate = sample_rate->valueint;
+    if (sample_rate) {
+      uint32_t rate = sample_rate->valueint;
+      if (rate < SOC_ADC_SAMPLE_FREQ_THRES_LOW) rate = SOC_ADC_SAMPLE_FREQ_THRES_LOW;
+      if (rate > SOC_ADC_SAMPLE_FREQ_THRES_HIGH) rate = SOC_ADC_SAMPLE_FREQ_THRES_HIGH;
+      if (s_sample_rate != rate) {
+        s_reconfig_needed = true;
+        s_sample_rate = rate;
+      }
     }
     cJSON* atten = cJSON_GetObjectItem(root, "atten");
-    if (atten && s_atten != (adc_atten_t)atten->valueint) {
+    if (atten && atten->valueint >= ADC_ATTEN_DB_0 && atten->valueint <= ADC_ATTEN_DB_12 &&
+        s_atten != (adc_atten_t)atten->valueint) {
       s_reconfig_needed = true;
       s_atten = (adc_atten_t)atten->valueint;
     }
@@ -428,10 +441,16 @@ static esp_err_t params_handler(httpd_req_t* req) {
       s_reconfig_needed = true;
       s_bit_width = (adc_bitwidth_t)bit_width->valueint;
     }
+    cJSON* channels = cJSON_GetObjectItem(root, "channels");
+    if (channels && (channels->valueint == 1 || channels->valueint == 2) &&
+        s_channels != channels->valueint) {
+      s_reconfig_needed = true;
+      s_channels = channels->valueint;
+    }
     cJSON* test_hz = cJSON_GetObjectItem(root, "test_hz");
-    if (test_hz) {
-      if (s_test_hz != (adc_bitwidth_t)test_hz->valueint) {
-        s_test_hz = (adc_bitwidth_t)test_hz->valueint;
+    if (test_hz && test_hz->valueint >= 1 && test_hz->valueint <= 40000) {
+      if (s_test_hz != (uint16_t)test_hz->valueint) {
+        s_test_hz = (uint16_t)test_hz->valueint;
         start_test_signal(s_test_hz);
       }
     }
@@ -446,6 +465,76 @@ static esp_err_t params_handler(httpd_req_t* req) {
   httpd_resp_send(req, "OK", 2);
   return ESP_OK;
 }
+
+/*
+ * Device info + ADC calibration table (GET /info)
+ * The browser converts raw ADC codes to volts by interpolating "mv", which holds
+ * the calibrated millivolts for raw codes 0, 128, 256 ... 4096 (33 points).
+ */
+#define CAL_POINTS 33
+static adc_cali_handle_t s_cali[ADC_ATTEN_DB_12 + 1];
+static bool s_cali_tried[ADC_ATTEN_DB_12 + 1];
+
+static adc_cali_handle_t get_cali(adc_atten_t atten) {
+  if (atten > ADC_ATTEN_DB_12) return NULL;
+  if (!s_cali_tried[atten]) {
+    s_cali_tried[atten] = true;
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    adc_cali_curve_fitting_config_t cfg = {
+        .unit_id = ADC_UNIT, .chan = SCOPE_CHANNEL, .atten = atten, .bitwidth = ADC_BITWIDTH_12};
+    if (adc_cali_create_scheme_curve_fitting(&cfg, &s_cali[atten]) != ESP_OK) s_cali[atten] = NULL;
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t cfg = {
+        .unit_id = ADC_UNIT, .atten = atten, .bitwidth = ADC_BITWIDTH_12};
+    if (adc_cali_create_scheme_line_fitting(&cfg, &s_cali[atten]) != ESP_OK) s_cali[atten] = NULL;
+#endif
+    ESP_LOGI(TAG, "ADC calibration for atten %d: %s", atten, s_cali[atten] ? "OK" : "not available");
+  }
+  return s_cali[atten];
+}
+
+static esp_err_t info_handler(httpd_req_t* req) {
+  adc_atten_t atten = s_atten;
+  int adc_gpio = -1, adc_gpio2 = -1;
+  adc_continuous_channel_to_io(ADC_UNIT, SCOPE_CHANNEL, &adc_gpio);
+  adc_continuous_channel_to_io(ADC_UNIT, SCOPE_CHANNEL2, &adc_gpio2);
+
+  cJSON* root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "target", CONFIG_IDF_TARGET);
+  cJSON_AddNumberToObject(root, "adc_gpio", adc_gpio);
+  cJSON_AddNumberToObject(root, "adc_gpio2", adc_gpio2);
+  cJSON_AddNumberToObject(root, "channels", s_channels);
+  cJSON_AddNumberToObject(root, "test_gpio", TEST_GPIO);
+  cJSON_AddNumberToObject(root, "rate_min", SOC_ADC_SAMPLE_FREQ_THRES_LOW);
+  cJSON_AddNumberToObject(root, "rate_max", SOC_ADC_SAMPLE_FREQ_THRES_HIGH);
+  cJSON_AddNumberToObject(root, "sample_rate", s_sample_rate);
+  cJSON_AddNumberToObject(root, "atten", atten);
+  cJSON_AddNumberToObject(root, "test_hz", s_test_hz);
+
+  adc_cali_handle_t cali = get_cali(atten);
+  cJSON_AddBoolToObject(root, "calibrated", cali != NULL);
+  if (cali) {
+    cJSON* mv = cJSON_AddArrayToObject(root, "mv");
+    for (int i = 0; i < CAL_POINTS; i++) {
+      int raw = i * 128;
+      if (raw > 4095) raw = 4095;
+      int v = 0;
+      adc_cali_raw_to_voltage(cali, raw, &v);
+      cJSON_AddItemToArray(mv, cJSON_CreateNumber(v));
+    }
+  }
+
+  char* json = cJSON_PrintUnformatted(root);
+  cJSON_Delete(root);
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  httpd_resp_send(req, json, HTTPD_RESP_USE_STRLEN);
+  free(json);
+  return ESP_OK;
+}
+
+static const httpd_uri_t uri_info = {
+    .uri = "/info", .method = HTTP_GET, .handler = info_handler, .user_ctx = NULL};
 
 static const httpd_uri_t uri_ws = {.uri = "/signal",
                                    .method = HTTP_GET,
@@ -464,7 +553,7 @@ static esp_err_t index_handler(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "Content-Type", "text/html; charset=utf-8");
   uint32_t len = index_html_end - index_html_start;
   // Workaround for some build systems adding null byte
-  while (len && index_js_start[len - 1] == 0) len--;
+  while (len && index_html_start[len - 1] == 0) len--;
   httpd_resp_send(req, (const char*)index_html_start, len);
   return ESP_OK;
 }
@@ -516,6 +605,7 @@ static esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
 static void start_webserver(void) {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.lru_purge_enable = true;
+  config.max_uri_handlers = 16;
 
   ESP_LOGI(TAG, "Starting webserver on port: '%d'", config.server_port);
   if (httpd_start(&s_server, &config) == ESP_OK) {
@@ -524,6 +614,7 @@ static void start_webserver(void) {
     httpd_register_uri_handler(s_server, &uri_index_js);
     httpd_register_uri_handler(s_server, &uri_ws);
     httpd_register_uri_handler(s_server, &uri_params);
+    httpd_register_uri_handler(s_server, &uri_info);
 
     // Register WiFi Manager endpoints
     wifi_manager_register_uri(s_server);

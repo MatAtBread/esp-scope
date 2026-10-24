@@ -84,6 +84,21 @@ The LED indicates one of four conditions:
 
 The displayed signal is sampled from ADC0. The test signal is output on D1. The default GPIOs for the LED and "AP-Mode" button are 15 and 9 respectively (hard-wired on an Seeed XIAO ESP32C6 to the yellow LED and "Boot" button).
 
+### ESP32-S3
+
+Build with `idf.py set-target esp32s3 build`. Defaults for the S3 (change them in `idf.py menuconfig` → espScope Configuration):
+
+* Optional second input CH2: **GPIO2** (ADC1 channel 1). In 2-channel mode the ADC alternates between both inputs,
+  so each gets half the sample rate (41 666 S/s); the UI corrects the skew between them and measures their phase.
+* Signal input: **GPIO1** (ADC1 channel 0). Input range 0–3.1 V at 12 dB attenuation – never apply negative voltages or more than 3.3 V.
+* Test signal output: **GPIO21**.
+* AP-Mode / factory-reset button: GPIO0 (BOOT). No status LED (the DevKit's RGB LED is not driven).
+
+The web UI has volts/div, time/div, vertical/horizontal position, DC/AC coupling, probe factor, trigger (auto/normal/free, edge, level),
+run/stop/single, autoset, cursors, averaging, FFT and automatic measurements (frequency, period, Vpp, Vmax, Vmin, amplitude, top/base,
+mean, RMS, duty cycle, pulse widths, rise/fall time, overshoot). Raw ADC codes are converted using the chip's eFuse calibration (`GET /info`).
+Open `main/index.html?demo` from a local web server to try the UI with a simulated signal.
+
 ## 3D design
 
 The 3D design is a two part case with space for a AA-battery (Li-poly 3.7v, which can connect directly to a Seeed XIAO ESP device) clips and holes for the USB-C connector and "ground", "signal" and "test" connections using standard 2.54mm pitch, easily cut from jumpers and soldered directly to the Seeed XIAO. The 3D design was done using Fusion 360 and printed on a Bambu Labs A1 Mini in 30 minutes.
